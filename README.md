@@ -37,7 +37,7 @@ API för bevakningar:
 | DELETE | `/api/watches/:id` | Ta bort bevakning och matchhistorik |
 | GET | `/api/items?watchId=1&newOnly=1` | Filtrera annonser per bevakning |
 
-Du kan inte redigera sökordet i en befintlig bevakning i Sprint 2. Ta bort och skapa en ny för att byta sökord eller prisgräns. Databasen migreras automatiskt – dina tidigare annonser ligger kvar.
+Sedan Sprint 4B kan du redigera kriterierna i en befintlig bevakning. Observera att bevakningens egen matchhistorik återställs vid en ändring; tidigare annonser ligger kvar i den gemensamma databasen.
 
 ## Sprint 3 – Pushover-notiser
 
@@ -85,6 +85,32 @@ SECONDARY_SEARCH_PAGES=1   # 1–3 resultatsidor vid extra sökning
 De här inställningarna är **valfria**, standarderna gäller även med befintlig `.env`. Med 8 aktiva bevakningar, 5-minutersintervall och 3 primära resultatsidor blir den uppskattade övre gränsen **8 640 sökanrop per dygn**, förutsatt att alla resultatsidor faktiskt hämtas.
 
 **Begränsning:** Fler sorteringsordningar minskar blinda fläckar men garanterar inte att alla annonser hittas. Måtten avser **nyupptäckta matchningar per sökning** (samma annons kan räknas i flera bevakningar), inte unika annonser eller försäljningar.
+
+## Sprint 4B – avancerade filter per bevakning
+
+Du kan nu **skapa och redigera** varje spelbevakning i webbgränssnittet med följande kriterier:
+
+- **Exkluderade ord eller fraser** separeras med kommatecken (högst 10 stycken). Matchningen sker i rubriken, oberoende av versaler och diakritiska tecken. Exempel: `Catan` men exkludera `expansion, tillägg, reservdelar`.
+- **Min- och maxpris**, vart och ett valfritt, mellan 1 och 500 000 kr. Om båda anges måste minimum vara högst maximum. Ett **och samma** aktuellt budpris eller Köp nu-pris måste ligga inom intervallet – vi kombinerar aldrig två olika priser till ett falskt fynd.
+- **Annonstyp:** `Alla annonser`, `Auktioner (bekräftad typ)` eller `Har Köp nu`. En kombinerad auktion + Köp nu kan matcha båda senare valen. Auktion kräver att Traderas sökresultat verkligen innehåller `itemType: 1`; **okänd typ antas aldrig vara auktion**. Köp nu kräver ett positivt Köp nu-pris eller explicit `itemType: 3`. Vid prisbegränsning använder vi bara budpriset för auktioner respektive Köp nu-priset för Köp nu-valet.
+
+**Viktigt:** Traderas REST v4-sökresultat är delvis odokumenterat, så vissa annonser kan sakna `itemType`. Använd `Alla annonser` för högsta täckning tills vi har verifierat typfältet på riktiga sökresultat. Vi har ännu **inte lagt till ett filter för skick**: skick kan finnas som kategoriattribut hos en fullständig annons, men är inte bekräftat i sökresultaten. Vi gissar inte på detta.
+
+**Så fungerar redigering:** Tryck **Redigera** på en bevakning, uppdatera kriterierna och spara. En ändring av kriterierna **återställer bara den bevakningens träffhistorik och väntande/skickade notisposter** så att nästa lyckade sökning blir en **ny baslinje utan retroaktiva Pushover-notiser**. Den gemensamma `items`-historiken, andra bevakningar och deras notiser påverkas inte. En oförändrad sparning gör ingen återställning. Bevakningar som ändrar sökord under pågående HTTP-anrop använder aldrig det gamla svaret för att skapa en ny baslinje.
+
+`POST /api/watches` accepterar nu `term`, `minPrice`, `maxPrice`, `excludeWords` (lista eller kommaseparerad text) och `listingType` (`all`, `auction`, `buy_now`). Exempel:
+
+```json
+{
+  "term": "Catan",
+  "excludeWords": ["expansion", "tillägg"],
+  "minPrice": 100,
+  "maxPrice": 300,
+  "listingType": "all"
+}
+```
+
+`PATCH /api/watches/:id` med dessa fält ändrar kriterierna; `PATCH` med enbart `{"enabled":false}` fungerar som tidigare för att pausa bevakningen. Befintliga bevakningar får automatiskt standardvärden (`minPrice=null`, tom exkluderingslista, `listingType=all`). **Inga nya miljövariabler och inga extra Tradera-anrop behövs.**
 
 ## Förbered API-nycklar
 
