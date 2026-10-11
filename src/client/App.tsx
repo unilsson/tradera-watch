@@ -11,6 +11,7 @@ type Status = {
   configured:boolean; scanning:boolean; total:number; newItems:number;
   lastScan:Scan|null; lastError:string|null; lastAttempt:string|null;
   categoryId:number; query:string; intervalSeconds:number; maxPages:number;
+  pushover?:{configured:boolean;pending:number;sent:number;lastError:string|null};
 };
 type Watch = {
   id:number; term:string; maxPrice:number|null; enabled:boolean;
@@ -45,6 +46,8 @@ export default function App() {
   const [actionError,setActionError] = useState<string|null>(null);
   const [loading,setLoading] = useState(false);
   const [saving,setSaving] = useState(false);
+  const [testingPushover,setTestingPushover] = useState(false);
+  const [pushoverFeedback,setPushoverFeedback] = useState<string|null>(null);
   const [term,setTerm] = useState('');
   const [price,setPrice] = useState('');
   const [revision,setRevision] = useState(0);
@@ -76,6 +79,15 @@ export default function App() {
     return ()=>{cancelled=true;window.clearInterval(timer);};
   },[page,newOnly,watchId,revision]);
 
+  async function testPushover() {
+    setTestingPushover(true);setPushoverFeedback(null);
+    try {
+      await sendChange('/api/notifications/test','POST');
+      setPushoverFeedback('Testnotisen skickades till Pushover.');
+    } catch(e) {
+      setPushoverFeedback(e instanceof Error ? 'Pushover: '+e.message : 'Testnotisen misslyckades');
+    } finally {setTestingPushover(false);}
+  }
   async function createWatch(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);setActionError(null);
@@ -121,6 +133,23 @@ export default function App() {
         <div className="metric"><span>Upptäckta efter baslinjen</span><strong>{status?.newItems??'–'}</strong></div>
         <div className="metric"><span>Senaste kategoriskanning</span><strong className="small">{date(status?.lastScan?.finishedAt??null)}</strong></div>
         <div className="metric"><span>Kontrollintervall</span><strong className="small">{status?Math.round(status.intervalSeconds/60)+' minuter':'–'}</strong></div>
+      </section>
+      <section className="pushover-section" aria-label="Pushover-notiser">
+        <div>
+          <div className="eyebrow">NOTISER</div>
+          <h3>Pushover <span className={'push-state '+(status?.pushover?.configured?'enabled':'disabled')}>
+            {status?.pushover?.configured?'Aktiverat':'Inte konfigurerat'}</span></h3>
+          <p>{status?.pushover?.configured
+            ? 'Nya träffar i aktiva spelbevakningar skickas automatiskt.'
+            : 'Lägg till PUSHOVER_APP_TOKEN och PUSHOVER_USER_KEY i .env för att aktivera notiser.'}</p>
+          {status?.pushover?.configured && <p>
+            {status.pushover.pending} väntande · {status.pushover.sent} skickade
+            {status.pushover.lastError?' · Senaste fel: '+status.pushover.lastError:''}
+          </p>}
+          {pushoverFeedback && <p role="status" className="push-feedback">{pushoverFeedback}</p>}
+        </div>
+        <button type="button" disabled={!status?.pushover?.configured||testingPushover}
+          onClick={()=>{void testPushover();}}>{testingPushover?'Skickar …':'Skicka testnotis'}</button>
       </section>
       {!status?.configured && status && <div className="notice">⚠️ API-nycklar saknas. Lägg in TRADERA_APP_ID och TRADERA_APP_KEY i .env.</div>}
       {status?.lastError && <div className="notice">⚠️ {status.lastError}</div>}
