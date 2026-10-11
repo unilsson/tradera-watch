@@ -45,7 +45,13 @@ export function parseSearchResult(value: unknown): { listings: Listing[]; totalP
     const cat = num(pick(item, 'categoryId', 'CategoryId')) || 181806;
     const images = pick(item, 'imageLinks', 'ImageLinks');
     const detailed = pick(item, 'detailedImageLinks', 'DetailedImageLinks');
-    const detail = Array.isArray(detailed) ? obj(detailed[0]) : null;
+    const firstFullImage = Array.isArray(images)
+      ? images.map(link => safeUrl(link)).find((url): url is string => url !== null) || null
+      : null;
+    const firstDetailedImage = Array.isArray(detailed)
+      ? detailed.map(link => safeUrl(pick(obj(link) || {}, 'url', 'Url')))
+        .find((url): url is string => url !== null) || null
+      : null;
     const currentBid = num(pick(item, 'maxBid', 'MaxBid', 'currentBid', 'CurrentBid'));
     const openingBid = num(pick(item, 'openingBid', 'OpeningBid', 'price', 'Price'));
     listings.push({
@@ -54,9 +60,8 @@ export function parseSearchResult(value: unknown): { listings: Listing[]; totalP
       price: currentBid !== null && currentBid > 0 ? currentBid : openingBid,
       buyNowPrice: pick(item, 'buyItNowPriceSpecified', 'BuyItNowPriceSpecified') === false
         ? null : num(pick(item, 'buyItNowPrice', 'BuyItNowPrice')),
-      imageUrl: safeUrl(pick(item, 'thumbnailLink', 'ThumbnailLink'))
-        || safeUrl(Array.isArray(images) ? images[0] : null)
-        || safeUrl(detail?.url),
+      // thumbnailLink is low-resolution. Prefer full image links when present.
+      imageUrl: firstFullImage || firstDetailedImage || safeUrl(pick(item, 'thumbnailLink', 'ThumbnailLink')),
       url: safeUrl(pick(item, 'itemLink', 'ItemLink'), 'tradera.com')
         || 'https://www.tradera.com/item/' + cat + '/' + id,
       startsAt: str(pick(item, 'startDate', 'StartDate')),
