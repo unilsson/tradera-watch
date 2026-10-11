@@ -112,6 +112,25 @@ Du kan nu **skapa och redigera** varje spelbevakning i webbgränssnittet med fö
 
 `PATCH /api/watches/:id` med dessa fält ändrar kriterierna; `PATCH` med enbart `{"enabled":false}` fungerar som tidigare för att pausa bevakningen. Befintliga bevakningar får automatiskt standardvärden (`minPrice=null`, tom exkluderingslista, `listingType=all`). **Inga nya miljövariabler och inga extra Tradera-anrop behövs.**
 
+## Discord – notiser via kanalens webhook
+
+Tradera Watch kan skicka nya matchande annonser till **Discord parallellt med Pushover**. Du behöver **ingen Discord-bot**, bara den webhook du redan har skapat i din `tradera-watch`-kanal.
+
+Lägg till den hemliga webhook-adressen i din **lokala** `.env`:
+
+```dotenv
+# Exempel – ersätt ID och TOKEN med din egen webhook, bara i .env
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/ID/TOKEN
+```
+
+Skicka **inte** din verkliga webhook-URL i chatten, till GitHub eller till frontend. URL:en innehåller en hemlig token och ger möjlighet att skicka meddelanden till kanalen. Den stannar på serversidan, visas aldrig via status-API:t och skrivs inte i loggar. Servern accepterar endast HTTPS-webhooks på `discord.com`.
+
+Kör `docker compose up -d --build` och öppna **http://localhost:3000**. I panelen **Discord** visas `Aktiverat`, köstatus och knappen **Skicka testmeddelande**. Testet skickar en separat notifiering till kanalen (högst en gång per minut). Du får en annonsruta med titel, sökbevakning, pris, länk till Tradera och annonsbild när sådan finns. Vi använder `allowed_mentions: {parse:[]}` så att annonsrubriker inte utlöser omnämnanden. Webb-API: `POST /api/discord/test`; `GET /api/status` innehåller `discord.configured`, `pending`, `sent` och `lastError`, men **aldrig URL:en**.
+
+**Nya fynd och kö:** Precis som med Pushover skickas Discord-notiser endast för **nya matchningar efter respektive bevaknings baslinje**, inte för gammal historik. Aktiverar du Discord i efterhand skickas inte tidigare fynd retroaktivt. Varje matchning köläggs atomiskt i en **egen SQLite-tabell** (`discord_outbox`) och skickas i en separat arbetare, max tio poster per minut. Misslyckade leveranser försöks igen med fördröjning; Discords `429`-svar respekteras. Pausade bevakningar stoppar skickning och redigerade/borttagna bevakningar rensar sin väntande Discord-kö. **Pushover-kön och Discord-kön är oberoende**, så ett fel i en tjänst påverkar inte den andra.
+
+Vi använder `wait=true` och markerar en leverans som skickad först efter kvittens med meddelande-ID från Discord. Precis som andra köbaserade notiser kan meddelanden i undantagsfall dubbleras om Discord har tagit emot dem men svaret tappas bort. Om ingen webhook-URL anges är integrationen helt avstängd och befintliga funktioner fortsätter fungera.
+
 ## Förbered API-nycklar
 
 1. Registrera en utvecklarapp på [api.tradera.com](https://api.tradera.com/register).
@@ -177,6 +196,7 @@ docker compose logs -f
 | `PORT` | `3001` | API-port; Docker ändrar till 3000 |
 | `PUSHOVER_APP_TOKEN` | tom | Valfri app-token från Pushover |
 | `PUSHOVER_USER_KEY` | tom | Valfri mottagarnyckel från Pushover |
+| `DISCORD_WEBHOOK_URL` | tom | Valfri privat Discord-webhook för kanalnotiser |
 
 ### Hur säkert upptäcks nya annonser?
 
