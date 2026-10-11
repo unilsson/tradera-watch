@@ -64,7 +64,9 @@ export class Monitor {
         } else {
           // Pushover's existing transactional enqueue and watch baseline remain unchanged.
           const watch=this.store.getWatch(watchId!);
-          if (!watch || !watch.enabled) return;
+          // If criteria were edited while this HTTP request was in flight,
+          // never use results from an old search term to establish a new baseline.
+          if (!watch || !watch.enabled || watch.term!==query) return;
           const matched=listings.filter(item=>matchesWatch(item,watch));
           found=matched.length;
           const outcome=this.store.saveWatchScan(
