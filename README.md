@@ -39,6 +39,29 @@ API för bevakningar:
 
 Du kan inte redigera sökordet i en befintlig bevakning i Sprint 2. Ta bort och skapa en ny för att byta sökord eller prisgräns. Databasen migreras automatiskt – dina tidigare annonser ligger kvar.
 
+## Sprint 3 – Pushover-notiser
+
+**Valfritt:** Pushover kan skicka en notis för **nya matchningar i en aktiv individuell spelbevakning**. Kategoriskanningen ger inga notiser.
+
+1. Hitta din **User Key** på [pushover.net](https://pushover.net/).
+2. Skapa gärna en egen applikation för Tradera Watch på [pushover.net/apps/build](https://pushover.net/apps/build) och kopiera dess **API Token/Key**.
+3. Lägg till följande i din **lokala** `.env` (ersätt platshållarna, dela inte nycklarna i chatten eller GitHub):
+
+```dotenv
+PUSHOVER_APP_TOKEN=din_app_token
+PUSHOVER_USER_KEY=din_user_key
+```
+
+4. Starta om med `docker compose up -d --build`, gå till **Pushover** på startsidan och klicka **Skicka testnotis**. Du får en separat Pushover-status med väntande/skickade notiser och eventuella fel.
+
+**Hur det fungerar:** Första lyckade skanningen av varje bevakning etablerar baslinjen och skickar ingenting. Vid senare skanningar sparas en köpost per ny matchande annons och bevakning. Köposten och matchningen skrivs i **samma SQLite-transaktion**. En arbetare skickar upp till tio notiser åt gången, direkt efter skanning och därefter en gång per minut. Misslyckade skickningar provas igen med ökande fördröjning (upp till en timme eller längre om Pushover ger `Retry-After`). En pausad bevakning skickar inga väntande notiser förrän den återaktiveras, och borttagna bevakningar tappar sin notiskö.
+
+Vid lyckat Pushover-svar med `status:1` markeras köposten skickad. Utskick görs **inte** för nya matchningar medan nycklarna saknas: du slipper en flod av gamla notiser när Pushover aktiveras. Om en annons matchar flera bevakningar kan du få en notis per bevakning.
+
+**Leveransgaranti:** Persistensen skyddar mot förlorade notiser vid vanliga nätfel och omstarter. Ett nätfel efter att Pushover tagit emot meddelandet men innan appen fått kvittens kan dock ge **dubbletter** vid ett senare försök (at-least-once). API- och användarnycklar skrivs aldrig till loggen eller skickas till frontend.
+
+Testnotisen kan skickas högst en gång per minut via `POST /api/notifications/test`. Status med skickat/väntande antal finns på `GET /api/status` under `pushover`.
+
 ## Förbered API-nycklar
 
 1. Registrera en utvecklarapp på [api.tradera.com](https://api.tradera.com/register).
@@ -100,6 +123,8 @@ docker compose logs -f
 | `MAX_PAGES` | `3` | Max sökresultatsidor per kontroll |
 | `DATA_DIR` | `./data` | Databasens mapp |
 | `PORT` | `3001` | API-port; Docker ändrar till 3000 |
+| `PUSHOVER_APP_TOKEN` | tom | Valfri app-token från Pushover |
+| `PUSHOVER_USER_KEY` | tom | Valfri mottagarnyckel från Pushover |
 
 ### Hur säkert upptäcks nya annonser?
 
@@ -113,7 +138,7 @@ Den första skanningen kan hämta äldre annonser. Den aktuella kategorin täcke
 
 - API-nycklar skickas endast server-till-server i `X-App-Id` och `X-App-Key`.
 - Webbgränssnittet behöver ingen Tradera-inloggning.
-- Appens egna `/api/*`-endpoints saknar inloggning i Sprint 1–2 och ska **inte** publiceras oskyddat på internet.
+- Appens egna `/api/*`-endpoints saknar inloggning i Sprint 1–3 och ska **inte** publiceras oskyddat på internet.
 - Avslutade annonser behålls som historik; appen garanterar inte att deras status är aktuell.
 - Anropstakten påverkas av `MAX_PAGES` × antal kontroller. Respektera Traderas anropsgränser och användarvillkor.
 
@@ -121,4 +146,4 @@ API-dokumentation: [Traderas REST v4](https://api.tradera.com/documentation/rest
 
 ## Kommande sprintar
 
-Verklig publiceringsdatum-sortering när Tradera dokumenterar ett stödd anrop, redigering av befintliga bevakningar och Pushover/Telegram-notiser.
+Verklig publiceringsdatum-sortering när Tradera dokumenterar ett stött anrop, redigering av befintliga bevakningar och eventuellt Telegram-notiser.
