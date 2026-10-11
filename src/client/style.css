@@ -71,3 +71,16 @@
 .discovery-details td{overflow-wrap:anywhere}
 @media(max-width:950px){.discovery-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:680px){.discovery-section{padding:18px;margin-top:-5px}.discovery-heading{align-items:flex-start;flex-direction:column}}
+
+/* Sprint 4B: compact, accessible advanced watch criteria */
+.watch-form.watch-form-advanced{grid-template-columns:repeat(2,minmax(0,1fr));align-items:end}
+.watch-form-heading{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.watch-form-heading strong{font-size:17px}
+.watch-form input,.watch-form select{width:100%;background:#0c1725;color:#eff5fc;border:1px solid #3c536b;
+  border-radius:10px;padding:12px 14px;outline:none;min-height:44px}
+.watch-form select:focus{border-color:#d7b36b;box-shadow:0 0 0 2px #d7b36b22}
+.watch-form-advanced .primary{width:100%;min-height:44px}
+.watch-form-advanced .form-cancel{color:#e7d2a8;background:#24384c;border:1px solid #465c70;
+  border-radius:9px;font-size:12px;padding:9px 13px}
+.watch-form-advanced .form-help{grid-column:1/-1;color:#9eb3c6;font-size:12px;line-height:1.55;margin:0}
+@media(max-width:680px){.watch-form.watch-form-advanced{grid-template-columns:1fr}}
