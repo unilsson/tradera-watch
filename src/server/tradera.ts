@@ -75,28 +75,85 @@ export function parseSearchResult(value: unknown): { listings: Listing[]; totalP
   return { listings, totalPages: pages !== null && pages >= 1 ? pages : null };
 }
 
-export async function fetchListings(config: Config, request: typeof fetch = fetch): Promise<Listing[]> {
+// Exposes *attempted* API requests for usage accounting (including failures).
+export interface SearchDiagnostics {
+  requests: number;
+  successfulPages: number;
+  secondaryRequests: number;
+  secondaryUsed: boolean;
+  secondaryError: string | null;
+  limitedByMaxPages: boolean;
+}
+export function searchDiagnostics(): SearchDiagnostics {
+  return {
+    requests:0, successfulPages:0, secondaryRequests:0,
+    secondaryUsed:false, secondaryError:null, limitedByMaxPages:false
+  };
+}
+export interface SearchOptions {
+  secondaryOrderBy?: 'EndDateAscending' | 'EndDateDescending';
+  secondaryMaxPages?: number;
+  diagnostics?: SearchDiagnostics;
+}
+
+/**
+ * The v4 fixed-criteria API advertises "newly listed" but its public
+ * OpenAPI request schema is empty. Do not submit undocumented requests.
+ * Safely widen GET /v4/search by using the opposite, documented end-date
+ * sort occasionally, while preserving the working primary order.
+ */
+export async function fetchListings(config: Config, request: typeof fetch = fetch,
+  options: SearchOptions = {}): Promise<Listing[]> {
   if (!config.appId || !config.appKey) throw new Error('Tradera API-nycklar saknas');
+  const diagnostics = options.diagnostics;
   const found: Listing[] = [];
   const seen = new Set<number>();
-  for (let page = 1; page <= config.maxPages; page++) {
-    const url = new URL('https://api.tradera.com/v4/search');
-    url.searchParams.set('query', config.query);
-    url.searchParams.set('categoryId', String(config.categoryId));
-    url.searchParams.set('pageNumber', String(page));
-    url.searchParams.set('orderBy', config.orderBy);
-    const response = await request(url, {
-      headers: { 'X-App-Id': config.appId, 'X-App-Key': config.appKey, Accept: 'application/json' },
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!response.ok) throw new Error('Tradera HTTP ' + response.status +
-      (response.headers.get('retry-after') ? ' (Retry-After: ' + response.headers.get('retry-after') + ')' : ''));
-    const { listings, totalPages } = parseSearchResult(await response.json());
-    let added = 0;
-    for (const item of listings) {
-      if (!seen.has(item.id)) { seen.add(item.id); found.push(item); added++; }
+  async function search(orderBy: string, maxPages: number, secondary: boolean): Promise<Listing[]> {
+    const rows: Listing[] = [];
+    const localSeen = new Set<number>();
+    for (let page = 1; page <= maxPages; page++) {
+      const url = new URL('https://api.tradera.com/v4/search');
+      url.searchParams.set('query', config.query);
+      url.searchParams.set('categoryId', String(config.categoryId));
+      url.searchParams.set('pageNumber', String(page));
+      url.searchParams.set('orderBy', orderBy);
+      if (diagnostics) {
+        diagnostics.requests++;
+        if (secondary) diagnostics.secondaryRequests++;
+      }
+      const response = await request(url, {
+        headers: { 'X-App-Id': config.appId, 'X-App-Key': config.appKey, Accept: 'application/json' },
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!response.ok) throw new Error('Tradera HTTP ' + response.status +
+        (response.headers.get('retry-after') ? ' (Retry-After: ' + response.headers.get('retry-after') + ')' : ''));
+      const {listings,totalPages} = parseSearchResult(await response.json());
+      if (diagnostics) diagnostics.successfulPages++;
+      let added = 0;
+      for (const item of listings) {
+        if (!localSeen.has(item.id)) { localSeen.add(item.id);rows.push(item);added++; }
+      }
+      if (listings.length === 0 || added === 0 || (totalPages !== null && page >= totalPages)) break;
+      if (diagnostics && page === maxPages && totalPages !== null && totalPages > maxPages)
+        diagnostics.limitedByMaxPages = true;
     }
-    if (listings.length === 0 || added === 0 || (totalPages !== null && page >= totalPages)) break;
+    return rows;
+  }
+  function merge(rows: Listing[]): void {
+    for (const item of rows) if (!seen.has(item.id)) {seen.add(item.id);found.push(item);}
+  }
+  // If the primary strategy fails, do not claim a successful scan or baseline.
+  merge(await search(config.orderBy,config.maxPages,false));
+  if (options.secondaryOrderBy && options.secondaryOrderBy !== config.orderBy) {
+    if (diagnostics) diagnostics.secondaryUsed = true;
+    try {
+      merge(await search(options.secondaryOrderBy,
+        Math.max(1,Math.min(options.secondaryMaxPages ?? 1,config.maxPages)),true));
+    } catch(error) {
+      // No dependency on the supplementary search: preserve the primary
+      // results and expose a warning, without marking the scan as failed.
+      if (diagnostics) diagnostics.secondaryError = error instanceof Error ? error.message : String(error);
+    }
   }
   return found;
 }
