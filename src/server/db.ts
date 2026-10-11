@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Listing } from './tradera.js';
-import type { Watch, WatchInput } from './watch-rules.js';
+import { parseWatchInput, matchesWatch, type Watch, type WatchInput } from './watch-rules.js';
 import { classifyDiscovered, discoveryAge, type DiscoveryAge } from '../shared/discovery.js';
 
 export interface QueuedNotification {
@@ -102,6 +102,17 @@ export class Store {
 
 
     `);
+    // Idempotent upgrade of the Sprint 2/3/4A database. Existing watches
+    // retain their filters, matches, and Pushover history.
+    const existingColumns=new Set(
+      (this.db.prepare('PRAGMA table_info(watches)').all() as {name:string}[])
+        .map(column=>column.name));
+    if(!existingColumns.has('min_price'))
+      this.db.exec('ALTER TABLE watches ADD COLUMN min_price INTEGER');
+    if(!existingColumns.has('exclude_words'))
+      this.db.exec("ALTER TABLE watches ADD COLUMN exclude_words TEXT NOT NULL DEFAULT '[]'");
+    if(!existingColumns.has('listing_type'))
+      this.db.exec("ALTER TABLE watches ADD COLUMN listing_type TEXT NOT NULL DEFAULT 'all'");
     this.db.exec('PRAGMA foreign_keys=ON;');
   }
   saveScan(items: Listing[], now = new Date().toISOString()): ScanResult {
@@ -161,6 +172,9 @@ export class Store {
     return {
       id: Number(row.id), term: String(row.term),
       maxPrice: row.maxPrice === null ? null : Number(row.maxPrice),
+      minPrice: row.minPrice === null ? null : Number(row.minPrice),
+      excludeWords:JSON.parse(String(row.excludeWords)) as string[],
+      listingType: row.listingType as Watch['listingType'],
       enabled: !!row.enabled, initialized: !!row.initialized,
       createdAt: String(row.createdAt),
       lastScannedAt: row.lastScannedAt === null ? null : String(row.lastScannedAt),
@@ -169,6 +183,7 @@ export class Store {
     };
   }
   private watchQuery = `SELECT w.id, w.term, w.max_price AS maxPrice,
+    w.min_price AS minPrice,w.exclude_words AS excludeWords,w.listing_type AS listingType,
     w.enabled, w.initialized, w.created_at AS createdAt,
     w.last_scanned_at AS lastScannedAt, w.last_error AS lastError,
     (SELECT count(*) FROM watch_matches m WHERE m.watch_id=w.id) AS matchedCount,
@@ -184,16 +199,55 @@ export class Store {
       .get(id) as Record<string,unknown>|undefined;
     return row ? this.watchFromRow(row) : null;
   }
-  createWatch(input: WatchInput): Watch {
-    const count = this.db.prepare('SELECT count(*) AS n FROM watches').get() as {n:number};
-    if (count.n >= 8) throw new Error('Högst åtta bevakningar stöds för att begränsa API-anrop');
-    const existing = this.db.prepare('SELECT id FROM watches WHERE lower(term)=lower(?) AND max_price IS ?')
-      .get(input.term,input.maxPrice);
-    if (existing) throw new Error('En identisk bevakning finns redan');
-    const result = this.db.prepare(`INSERT INTO watches
-      (term,max_price,created_at) VALUES (?,?,?)`)
-      .run(input.term,input.maxPrice,new Date().toISOString());
+  private sameCriteria(left:WatchInput,right:WatchInput):boolean {
+    const pick=(w:WatchInput)=>({
+      term:w.term,minPrice:w.minPrice??null,maxPrice:w.maxPrice,
+      excludeWords:w.excludeWords??[],listingType:w.listingType??'all'
+    });
+    const a=parseWatchInput(pick(left)),b=parseWatchInput(pick(right));
+    const n=(s:string)=>s.normalize('NFD').replace(/\p{M}/gu,'')
+      .toLocaleLowerCase('sv-SE');
+    return n(a.term)===n(b.term) && a.minPrice===b.minPrice &&
+      a.maxPrice===b.maxPrice && a.listingType===b.listingType &&
+      a.excludeWords.map(n).sort().join('\\0')===b.excludeWords.map(n).sort().join('\\0');
+  }
+  private ensureUnique(input:WatchInput,exceptId?:number):void {
+    if(this.listWatches().some(w=>w.id!==exceptId && this.sameCriteria(w,input)))
+      throw new Error('En identisk bevakning finns redan');
+  }
+  createWatch(input:WatchInput):Watch {
+    const values=parseWatchInput(input);
+    const count=this.db.prepare('SELECT count(*) AS n FROM watches').get() as {n:number};
+    if(count.n>=8) throw new Error('Högst åtta bevakningar stöds för att begränsa API-anrop');
+    this.ensureUnique(values);
+    const result=this.db.prepare(`INSERT INTO watches
+      (term,min_price,max_price,exclude_words,listing_type,created_at)
+      VALUES (?,?,?,?,?,?)`).run(values.term,values.minPrice,values.maxPrice,
+        JSON.stringify(values.excludeWords),values.listingType,new Date().toISOString());
     return this.getWatch(Number(result.lastInsertRowid))!;
+  }
+  /**
+   * A changed watch must re-establish its baseline, otherwise older listings
+   * matching NEW filters would trigger retroactive Pushover notifications.
+   * Reset watch-scoped matches and outbox, never the global item inventory.
+   */
+  updateWatch(id:number,input:WatchInput):Watch|null {
+    const existing=this.getWatch(id);
+    if(!existing)return null;
+    const values=parseWatchInput(input);
+    if(this.sameCriteria(existing,values))return existing;
+    this.ensureUnique(values,id);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM notification_outbox WHERE watch_id=?').run(id);
+      this.db.prepare('DELETE FROM watch_matches WHERE watch_id=?').run(id);
+      this.db.prepare(`UPDATE watches SET term=?,min_price=?,max_price=?,
+        exclude_words=?,listing_type=?,initialized=0,last_scanned_at=NULL,
+        last_error=NULL WHERE id=?`).run(values.term,values.minPrice,values.maxPrice,
+          JSON.stringify(values.excludeWords),values.listingType,id);
+      this.db.exec('COMMIT');
+      return this.getWatch(id);
+    }catch(error){this.db.exec('ROLLBACK');throw error;}
   }
   setWatchEnabled(id: number, enabled: boolean): Watch | null {
     const result = this.db.prepare('UPDATE watches SET enabled=? WHERE id=?').run(enabled ? 1 : 0,id);
@@ -224,7 +278,10 @@ export class Store {
       const enqueue = this.db.prepare(`INSERT OR IGNORE INTO notification_outbox
         (watch_id,item_id,created_at,next_attempt_at) VALUES (?,?,?,?)`);
       let added = 0;
-      for (const item of items) {
+      // Recheck against the CURRENT criteria, not stale filters retained by
+      // an in-flight network request while the user edited this watch.
+      const filtered = items.filter(item=>matchesWatch(item,watch));
+      for (const item of filtered) {
         insert.run(item.id, item.categoryId, item.title, item.price, item.buyNowPrice,
           item.imageUrl, item.url, item.startsAt, item.endsAt,
           now, now, initialized && watch.initialized ? 1 : 0);
@@ -239,7 +296,7 @@ export class Store {
       this.db.prepare(`UPDATE watches SET initialized=1,last_scanned_at=?,last_error=NULL WHERE id=?`)
         .run(now,watchId);
       this.db.exec('COMMIT');
-      return {matched:items.length,added,baseline:!watch.initialized};
+      return {matched:filtered.length,added,baseline:!watch.initialized};
     } catch(error) { this.db.exec('ROLLBACK'); throw error; }
   }
   nextNotification(now = new Date().toISOString()): QueuedNotification | null {
