@@ -8,6 +8,7 @@ export interface Config {
   dataDir: string; port: number;
   secondaryEvery?: number; secondaryPages?: number;
   pushoverToken?: string; pushoverUser?: string;
+  discordWebhookUrl?: string;
 }
 function num(name: string, fallback: number, min: number, max: number): number {
   const input = process.env[name];
@@ -31,6 +32,7 @@ export function loadConfig(): Config {
     dataDir: resolve(process.env.DATA_DIR || './data'),
     port: num('PORT', 3001, 1, 65535),
     pushoverToken: (process.env.PUSHOVER_APP_TOKEN || '').trim(),
-    pushoverUser: (process.env.PUSHOVER_USER_KEY || '').trim()
+    pushoverUser: (process.env.PUSHOVER_USER_KEY || '').trim(),
+    discordWebhookUrl: (process.env.DISCORD_WEBHOOK_URL || '').trim()
   };
 }
