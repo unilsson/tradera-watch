@@ -200,7 +200,11 @@ export class Store {
     return row ? this.watchFromRow(row) : null;
   }
   private sameCriteria(left:WatchInput,right:WatchInput):boolean {
-    const a=parseWatchInput(left),b=parseWatchInput(right);
+    const pick=(w:WatchInput)=>({
+      term:w.term,minPrice:w.minPrice??null,maxPrice:w.maxPrice,
+      excludeWords:w.excludeWords??[],listingType:w.listingType??'all'
+    });
+    const a=parseWatchInput(pick(left)),b=parseWatchInput(pick(right));
     const n=(s:string)=>s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')
       .toLocaleLowerCase('sv-SE');
     return n(a.term)===n(b.term) && a.minPrice===b.minPrice &&
