@@ -90,12 +90,34 @@ const server = createServer(async (request, response) => {
       return json(response,200,watch);
     }
     if (request.method !== 'GET') return json(response, 405, {error:'Metoden stöds inte'});
+    if (url.pathname === '/api/discovery') return json(response,200,{
+      ...store.searchStats(),strategy:{
+        primaryOrderBy:config.orderBy,secondaryOrderBy:config.orderBy==='EndDateAscending'
+          ? 'EndDateDescending':'EndDateAscending',
+        secondaryEnabled:monitor.secondarySearchEnabled,
+        secondaryEvery:config.secondaryEvery??0,
+        secondaryPages:config.secondaryPages??1,
+        estimatedCallsPerDay:monitor.estimatedRequestsPerDay,
+        warning:monitor.searchWarning
+      }
+    });
     if (url.pathname === '/api/health') return json(response, 200, {ok:true, configured:monitor.configured});
     if (url.pathname === '/api/status') return json(response, 200, {
       ...store.stats(), scanning:monitor.scanning, configured:monitor.configured,
       lastError:monitor.lastError, lastAttempt:monitor.lastAttempt,
       categoryId:config.categoryId, query:config.query, intervalSeconds:config.intervalSeconds,
       maxPages:config.maxPages, orderBy:config.orderBy,
+      discovery:{
+        ...store.searchStats(),
+        strategy:{
+          primaryOrderBy:config.orderBy,
+          secondaryEnabled:monitor.secondarySearchEnabled,
+          secondaryEvery:config.secondaryEvery??0,
+          secondaryPages:config.secondaryPages??1,
+          estimatedCallsPerDay:monitor.estimatedRequestsPerDay,
+          warning:monitor.searchWarning
+        }
+      },
       pushover:{configured:notifications.enabled,...store.notificationStats(),
         lastError:notifications.lastError || store.notificationStats().lastError}
     });
