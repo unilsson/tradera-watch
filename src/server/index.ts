@@ -69,7 +69,10 @@ const server = createServer(async (request, response) => {
       return json(response, 200, {watches:store.listWatches(), limit:8});
     if (url.pathname === '/api/watches' && request.method === 'POST') {
       verifyOrigin(request);
-      const input = parseWatchInput(await jsonBody(request));
+      const payload=await jsonBody(request);
+      let input;
+      try {input=parseWatchInput(payload);}
+      catch(error) {throw new RequestError(400,error instanceof Error?error.message:'Ogiltiga filter');}
       try { return json(response, 201, store.createWatch(input)); }
       catch (error) { throw new RequestError(409,error instanceof Error ? error.message : String(error)); }
     }
@@ -83,11 +86,27 @@ const server = createServer(async (request, response) => {
         return json(response,200,{deleted:true});
       }
       const data = await jsonBody(request) as Record<string,unknown>;
-      if (!data || typeof data !== 'object' || Array.isArray(data) || typeof data.enabled !== 'boolean')
-        throw new RequestError(400,'enabled måste vara true eller false');
-      const watch = store.setWatchEnabled(id,data.enabled);
-      if (!watch) throw new RequestError(404,'Bevakningen finns inte');
-      return json(response,200,watch);
+      if (!data || typeof data !== 'object' || Array.isArray(data))
+        throw new RequestError(400,'Förväntade ett JSON-objekt');
+      if ('enabled' in data) {
+        if(typeof data.enabled!=='boolean' || Object.keys(data).length!==1)
+          throw new RequestError(400,'enabled måste vara true eller false och skickas separat');
+        const watch=store.setWatchEnabled(id,data.enabled);
+        if(!watch)throw new RequestError(404,'Bevakningen finns inte');
+        return json(response,200,watch);
+      }
+      const current=store.getWatch(id);
+      if(!current)throw new RequestError(404,'Bevakningen finns inte');
+      if(Object.keys(data).length===0)throw new RequestError(400,'Ange minst ett filterfält');
+      let input;
+      try {
+        input=parseWatchInput({
+          term:current.term,minPrice:current.minPrice,maxPrice:current.maxPrice,
+          excludeWords:current.excludeWords,listingType:current.listingType,...data
+        });
+      } catch(error) {throw new RequestError(400,error instanceof Error?error.message:'Ogiltiga filter');}
+      try {return json(response,200,store.updateWatch(id,input));}
+      catch(error) {throw new RequestError(409,error instanceof Error?error.message:'Kan inte uppdatera bevakningen');}
     }
     if (request.method !== 'GET') return json(response, 405, {error:'Metoden stöds inte'});
     if (url.pathname === '/api/discovery') return json(response,200,{
