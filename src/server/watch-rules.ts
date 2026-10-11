@@ -3,12 +3,15 @@ import type { Listing } from './tradera.js';
 export type ListingTypeFilter = 'all' | 'auction' | 'buy_now';
 export interface WatchInput {
   term: string;
-  minPrice: number | null;
+  minPrice?: number | null;
   maxPrice: number | null;
-  excludeWords: string[];
-  listingType: ListingTypeFilter;
+  excludeWords?: string[];
+  listingType?: ListingTypeFilter;
 }
 export interface Watch extends WatchInput {
+  minPrice: number | null;
+  excludeWords: string[];
+  listingType: ListingTypeFilter;
   id: number;
   enabled: boolean;
   initialized: boolean;
@@ -34,7 +37,7 @@ function optionalPrice(input:unknown,label:string):number|null {
     throw new Error(label+' måste vara ett heltal mellan 1 och 500000 kr');
   return value;
 }
-export function parseWatchInput(payload:unknown):WatchInput {
+export function parseWatchInput(payload:unknown):Required<WatchInput> {
   if(!payload || typeof payload!=='object' || Array.isArray(payload))
     throw new Error('Förväntade ett JSON-objekt');
   const data=payload as Record<string,unknown>;
@@ -72,7 +75,7 @@ export function parseWatchInput(payload:unknown):WatchInput {
 export function matchesWatch(item:Listing,watch:WatchInput):boolean {
   const title=normalize(item.title);
   if(!title.includes(normalize(watch.term)))return false;
-  if(watch.excludeWords.some(word=>title.includes(normalize(word))))return false;
+  if((watch.excludeWords??[]).some(word=>title.includes(normalize(word))))return false;
   const auction=item.itemType===1;
   const buyNow=(item.buyNowPrice!==null && item.buyNowPrice>0)||item.itemType===3;
   if(watch.listingType==='auction' && !auction)return false;
@@ -85,7 +88,8 @@ export function matchesWatch(item:Listing,watch:WatchInput):boolean {
       [item.price,item.buyNowPrice];
   const valid=prices.filter((value):value is number=>
     value!==null && Number.isFinite(value) && value>0);
-  if(watch.minPrice===null && watch.maxPrice===null)return true;
-  return valid.some(value=>(watch.minPrice===null || value>=watch.minPrice) &&
+  const minPrice=watch.minPrice??null;
+  if(minPrice===null && watch.maxPrice===null)return true;
+  return valid.some(value=>(minPrice===null || value>=minPrice) &&
     (watch.maxPrice===null || value<=watch.maxPrice));
 }
