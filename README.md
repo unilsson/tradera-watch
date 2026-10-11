@@ -12,6 +12,33 @@ Liten, **skrivskyddad** bevakningsapp för annonser om brädspel på Tradera. No
 - Hälsokontroll och status på `/api/health`, `/api/status` och annonser på `/api/items`.
 - Inga bud, köp eller modifieringar av Tradera-kontot.
 
+## Sprint 2 – egna bevakningar
+
+Via dashboarden kan du nu skapa upp till **åtta individuella bevakningar** med:
+
+- Spelnamn, t.ex. `Terraforming Mars` (matchas skiftläges- och accentokänsligt i annonsrubriken).
+- Valfritt maxpris i hela kronor. En annons matchar om budpriset **eller** köp-nu-priset är inom gränsen. Annonser utan pris matchar inte en prisbegränsad bevakning.
+- Pausa/återaktivera och ta bort bevakningar.
+- Visa samtliga eller enbart nytillkomna träffar för en enskild bevakning.
+
+Varje bevakning använder en **egen Tradera-sökning** inom `TRADERA_CATEGORY_ID`, så smalare sökningar kan hitta spel som ligger utanför de första sidorna i kategorins allmänna sökresultat. Första lyckade sökningen ger bevakningens baslinje och markerar inte dåvarande träffar som nya. Matchningar på följande sökningar registreras utan dubbletter.
+
+**Observera:** "Nya" betyder nya *för vår bevakning*, inte nödvändigtvis publicerade just då. Traderas v4-`GET /search` dokumenterar inte en sortering efter publiceringsdatum. `/search/by-fixed-criteria` omnämner nypublicerade annonser, men specifikationen saknar dess requestfält. Vi använder därför endast det verifierade GET-anropet; inga garantier om att varje nypublicerad annons hittas.
+
+**API-budget:** En standardskanning med 8 aktiva bevakningar och `MAX_PAGES=3` kan göra upp till 27 sökanrop. Med fem minuters intervall blir det maximalt 7776 anrop per dygn. Sänk inte `POLL_INTERVAL_SECONDS` eller höj `MAX_PAGES` utan att kontrollera aktuell API-kvot.
+
+API för bevakningar:
+
+| Metod | URL | Funktion |
+|---|---|---|
+| GET | `/api/watches` | Lista bevakningar, antal träffar och status |
+| POST | `/api/watches` | Skapa: `{"term":"Azul","maxPrice":200}` |
+| PATCH | `/api/watches/:id` | Pausa/återuppta: `{"enabled":false}` |
+| DELETE | `/api/watches/:id` | Ta bort bevakning och matchhistorik |
+| GET | `/api/items?watchId=1&newOnly=1` | Filtrera annonser per bevakning |
+
+Du kan inte redigera sökordet i en befintlig bevakning i Sprint 2. Ta bort och skapa en ny för att byta sökord eller prisgräns. Databasen migreras automatiskt – dina tidigare annonser ligger kvar.
+
 ## Förbered API-nycklar
 
 1. Registrera en utvecklarapp på [api.tradera.com](https://api.tradera.com/register).
@@ -86,7 +113,7 @@ Den första skanningen kan hämta äldre annonser. Den aktuella kategorin täcke
 
 - API-nycklar skickas endast server-till-server i `X-App-Id` och `X-App-Key`.
 - Webbgränssnittet behöver ingen Tradera-inloggning.
-- Appens egna `/api/*`-endpoints saknar inloggning i Sprint 1 och ska **inte** publiceras oskyddat på internet.
+- Appens egna `/api/*`-endpoints saknar inloggning i Sprint 1–2 och ska **inte** publiceras oskyddat på internet.
 - Avslutade annonser behålls som historik; appen garanterar inte att deras status är aktuell.
 - Anropstakten påverkas av `MAX_PAGES` × antal kontroller. Respektera Traderas anropsgränser och användarvillkor.
 
@@ -94,4 +121,4 @@ API-dokumentation: [Traderas REST v4](https://api.tradera.com/documentation/rest
 
 ## Kommande sprintar
 
-Anpassningsbara bevakningar för flera spel/kategorier, prisgränser och Pushover/Telegram-notiser.
+Verklig publiceringsdatum-sortering när Tradera dokumenterar ett stödd anrop, redigering av befintliga bevakningar och Pushover/Telegram-notiser.

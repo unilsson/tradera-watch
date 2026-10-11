@@ -1,6 +1,7 @@
 import type { Config } from './config.js';
 import { Store } from './db.js';
 import { fetchListings } from './tradera.js';
+import { matchesWatch } from './watch-rules.js';
 
 export class Monitor {
   private timer: NodeJS.Timeout | null = null;
@@ -15,15 +16,32 @@ export class Monitor {
     if (this.busy || !this.configured) return;
     this.busy = true;
     this.lastAttempt = new Date().toISOString();
+    const errors: string[] = [];
     try {
-      // Spara först när ALLA sidor hämtats utan fel. Delvis lyckade svar räknas inte.
-      const listings = await this.fetcher(this.config);
-      const result = this.store.saveScan(listings);
-      this.lastError = null;
-      console.log('Tradera scan:', JSON.stringify(result));
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
-      console.error('Tradera scan failed:', this.lastError);
+      // Keep the original category scan and its historic baseline intact.
+      try {
+        const listings = await this.fetcher(this.config);
+        const result = this.store.saveScan(listings);
+        console.log('Tradera category scan:', JSON.stringify(result));
+      } catch (error) {
+        errors.push('Kategori: ' + (error instanceof Error ? error.message : String(error)));
+      }
+      // Targeted searches reach game listings outside the main category scan's
+      // first N result pages. Each watch has its own independent baseline.
+      for (const watch of this.store.listWatches().filter(w => w.enabled)) {
+        try {
+          const listings = await this.fetcher({...this.config, query: watch.term});
+          const matches = listings.filter(item => matchesWatch(item,watch));
+          const result = this.store.saveWatchScan(watch.id,matches);
+          console.log('Tradera watch:',watch.id,JSON.stringify(result));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.store.watchFailed(watch.id,message);
+          errors.push('Bevakning ' + watch.term + ': ' + message);
+        }
+      }
+      this.lastError = errors.length ? errors.join(' | ') : null;
+      if (errors.length) console.error('Tradera polling errors:',this.lastError);
     } finally {
       this.busy = false;
     }
