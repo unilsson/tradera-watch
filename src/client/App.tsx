@@ -1,7 +1,8 @@
+import { largeImageUrl, listingUrl } from '../shared/tradera-media';
 import { useEffect, useState } from 'react';
 
 type Listing = {
-  id:number; title:string; price:number|null; buyNowPrice:number|null;
+  id:number; categoryId:number; title:string; price:number|null; buyNowPrice:number|null;
   imageUrl:string|null; url:string; startsAt:string|null; endsAt:string|null;
   firstSeenAt:string; isNew:boolean;
 };
@@ -75,8 +76,17 @@ export default function App() {
           Visa endast nytillkomna</label>
       </section>
       {data.items.length ? <div className="grid">{data.items.map(item=>
-        <a className="card" key={item.id} href={item.url} target="_blank" rel="noopener noreferrer">
-          <div className="image">{item.imageUrl ? <img src={item.imageUrl} alt="" loading="lazy" /> : <span aria-hidden="true">🎲</span>}
+        <a className="card" key={item.id} href={listingUrl(item)} target="_blank" rel="noopener noreferrer">
+          <div className="image">{item.imageUrl ? <img src={largeImageUrl(item.imageUrl) || item.imageUrl} alt="" loading="lazy"
+            onError={event => {
+              const img = event.currentTarget;
+              if (img.dataset.fallback !== '1') {
+                img.dataset.fallback = '1';
+                img.src = item.imageUrl!;
+              } else {
+                img.style.display = 'none';
+              }
+            }} /> : <span aria-hidden="true">🎲</span>}
             {item.isNew && <span className="new-tag">NY</span>}</div>
           <div className="card-body"><h4>{item.title}</h4>
             <div className="prices"><strong>{money(item.price)}</strong>
