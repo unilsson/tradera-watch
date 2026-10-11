@@ -205,7 +205,7 @@ export class Store {
       excludeWords:w.excludeWords??[],listingType:w.listingType??'all'
     });
     const a=parseWatchInput(pick(left)),b=parseWatchInput(pick(right));
-    const n=(s:string)=>s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')
+    const n=(s:string)=>s.normalize('NFD').replace(/\p{M}/gu,'')
       .toLocaleLowerCase('sv-SE');
     return n(a.term)===n(b.term) && a.minPrice===b.minPrice &&
       a.maxPrice===b.maxPrice && a.listingType===b.listingType &&
