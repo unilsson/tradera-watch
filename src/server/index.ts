@@ -6,12 +6,14 @@ import { loadConfig } from './config.js';
 import { Store } from './db.js';
 import { Monitor } from './monitor.js';
 import { NotificationWorker } from './notifications.js';
+import { DiscordWorker } from './discord-worker.js';
 import { parseWatchInput } from './watch-rules.js';
 
 const config = loadConfig();
 const store = new Store(resolve(config.dataDir, 'tradera-watch.sqlite'));
 const notifications = new NotificationWorker(config, store);
-const monitor = new Monitor(config, store, undefined, notifications);
+const discord = new DiscordWorker(config, store);
+const monitor = new Monitor(config, store, undefined, notifications, discord);
 const webDir = resolve(dirname(fileURLToPath(import.meta.url)), '../web');
 
 function json(response: import('node:http').ServerResponse, status: number, data: unknown): void {
@@ -55,6 +57,18 @@ function verifyOrigin(request: import('node:http').IncomingMessage): void {
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', 'http://localhost');
+    if (url.pathname === '/api/discord/test' && request.method === 'POST') {
+      verifyOrigin(request);
+      if (!discord.enabled)
+        throw new RequestError(409,discord.configurationError || 'Discord är inte konfigurerat');
+      try {
+        await discord.sendTest();
+        return json(response,200,{ok:true});
+      } catch(error) {
+        const message=error instanceof Error?error.message:'Discord kunde inte nås';
+        throw new RequestError(502,message);
+      }
+    }
     if (url.pathname === '/api/notifications/test' && request.method === 'POST') {
       verifyOrigin(request);
       if (!notifications.enabled) throw new RequestError(409,'Pushover är inte konfigurerat');
@@ -137,6 +151,8 @@ const server = createServer(async (request, response) => {
           warning:monitor.searchWarning
         }
       },
+      discord:{configured:discord.enabled,...store.discordStats(),
+        lastError:discord.configurationError || discord.lastError || store.discordStats().lastError},
       pushover:{configured:notifications.enabled,...store.notificationStats(),
         lastError:notifications.lastError || store.notificationStats().lastError}
     });
@@ -182,11 +198,13 @@ const server = createServer(async (request, response) => {
 server.listen(config.port, '0.0.0.0', () => {
   console.log('Tradera Watch API: http://localhost:' + config.port);
   notifications.start();
+  discord.start();
   monitor.start();
 });
 function shutdown(): void {
   monitor.stop();
   notifications.stop();
+  discord.stop();
   server.close(() => { store.close(); process.exit(0); });
 }
 process.on('SIGTERM', shutdown);
