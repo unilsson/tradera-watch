@@ -1,4 +1,8 @@
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { Store } from '../src/server/db.js';
 import { Monitor } from '../src/server/monitor.js';
@@ -83,4 +87,29 @@ test('failed watch polling does not initialize watch baseline',async()=>{
     assert.match(store.getWatch(watch.id)?.lastError||'',/429/);
     assert.match(monitor.lastError||'',/429/);
   } finally {store.close();}
+});
+
+test('migrating an existing Sprint 1 SQLite file preserves saved listings',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'tradera-sprint2-'));
+  const file=join(dir,'tradera-watch.sqlite');
+  try {
+    const old=new DatabaseSync(file);
+    old.exec(`CREATE TABLE items (
+      id INTEGER PRIMARY KEY,category_id INTEGER NOT NULL,title TEXT NOT NULL,
+      price REAL,buy_now_price REAL,image_url TEXT,url TEXT NOT NULL,
+      starts_at TEXT,ends_at TEXT,first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,is_new INTEGER NOT NULL DEFAULT 0
+    );`);
+    old.prepare(`INSERT INTO items(id,category_id,title,price,url,first_seen_at,last_seen_at)
+      VALUES (1,181806,'Carcassonne',100,'https://www.tradera.com/item/181806/1/carcassonne',
+      '2026-10-11T12:00:00Z','2026-10-11T12:00:00Z')`).run();
+    old.close();
+    const store=new Store(file);
+    try {
+      assert.equal(store.list().total,1);
+      const watch=store.createWatch({term:'Carcassonne',maxPrice:200});
+      assert.equal(store.getWatch(watch.id)?.initialized,false);
+      assert.equal(store.list().total,1);
+    } finally {store.close();}
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });
