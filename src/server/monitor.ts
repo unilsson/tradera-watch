@@ -2,6 +2,7 @@ import type { Config } from './config.js';
 import { Store } from './db.js';
 import { fetchListings } from './tradera.js';
 import { matchesWatch } from './watch-rules.js';
+import type { NotificationWorker } from './notifications.js';
 
 export class Monitor {
   private timer: NodeJS.Timeout | null = null;
@@ -9,7 +10,8 @@ export class Monitor {
   lastError: string | null = null;
   lastAttempt: string | null = null;
   constructor(private config: Config, private store: Store,
-    private fetcher: typeof fetchListings = fetchListings) {}
+    private fetcher: typeof fetchListings = fetchListings,
+    private notifications?: NotificationWorker) {}
   get scanning(): boolean { return this.busy; }
   get configured(): boolean { return !!(this.config.appId && this.config.appKey); }
   async scan(): Promise<void> {
@@ -32,7 +34,7 @@ export class Monitor {
         try {
           const listings = await this.fetcher({...this.config, query: watch.term});
           const matches = listings.filter(item => matchesWatch(item,watch));
-          const result = this.store.saveWatchScan(watch.id,matches);
+          const result = this.store.saveWatchScan(watch.id,matches,undefined,this.notifications?.enabled ?? false);
           console.log('Tradera watch:',watch.id,JSON.stringify(result));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -44,6 +46,9 @@ export class Monitor {
       if (errors.length) console.error('Tradera polling errors:',this.lastError);
     } finally {
       this.busy = false;
+      // Dispatch only after the SQL transaction commits. Delivery is independent
+      // of fetching so Pushover outages cannot interrupt monitoring.
+      void this.notifications?.flush();
     }
   }
   start(): void {
