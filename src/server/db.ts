@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Listing } from './tradera.js';
 import type { Watch, WatchInput } from './watch-rules.js';
+import { classifyDiscovered, discoveryAge, type DiscoveryAge } from '../shared/discovery.js';
 
 export interface QueuedNotification {
   id: number; watchId: number; watchTerm: string; item: Listing; attempts: number;
@@ -11,9 +12,33 @@ export interface NotificationStats {pending: number; sent: number; lastError: st
 
 export interface StoredListing extends Listing {
   firstSeenAt: string; lastSeenAt: string; isNew: boolean;
+  discoveryAge?: DiscoveryAge;
 }
 export interface ScanResult {
   finishedAt: string; fetched: number; added: number; baseline: boolean;
+}
+export interface SearchRun {
+  scope: 'category' | 'watch';
+  watchId: number | null;
+  query: string;
+  finishedAt: string;
+  apiCalls: number;
+  pages: number;
+  resultCount: number;
+  newCount: number;
+  recentCount: number;
+  olderCount: number;
+  unknownCount: number;
+  secondaryUsed: boolean;
+  secondaryError: string | null;
+  limitedByMaxPages: boolean;
+  error: string | null;
+}
+export interface SearchStats {
+  last: SearchRun | null;
+  last24h: {apiCalls:number;pages:number;newCount:number;recentCount:number;
+    olderCount:number;unknownCount:number;failures:number;scans:number};
+  recentRuns: SearchRun[];
 }
 export class Store {
   private db: DatabaseSync;
@@ -63,6 +88,18 @@ export class Store {
     );
     CREATE INDEX IF NOT EXISTS notification_outbox_pending
       ON notification_outbox(sent_at,next_attempt_at);
+    CREATE TABLE IF NOT EXISTS search_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL, watch_id INTEGER, query TEXT NOT NULL,
+      finished_at TEXT NOT NULL, api_calls INTEGER NOT NULL,
+      pages INTEGER NOT NULL, result_count INTEGER NOT NULL,
+      new_count INTEGER NOT NULL, recent_count INTEGER NOT NULL,
+      older_count INTEGER NOT NULL, unknown_count INTEGER NOT NULL,
+      secondary_used INTEGER NOT NULL, secondary_error TEXT,
+      limited_by_max_pages INTEGER NOT NULL, error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS search_runs_date ON search_runs(finished_at);
+
 
     `);
     this.db.exec('PRAGMA foreign_keys=ON;');
@@ -116,7 +153,8 @@ export class Store {
       + ' ORDER BY ' + (scoped ? 'm.first_seen_at' : 'i.first_seen_at')
       + ' DESC, i.id DESC LIMIT ? OFFSET ?')
       .all(...params, limit, (page - 1) * limit) as unknown as Array<Omit<StoredListing, 'isNew'> & { isNew: number }>;
-    return { items: rows.map(item => ({...item, isNew: !!item.isNew})), total: total.n };
+    return { items: rows.map(item => ({...item, isNew: !!item.isNew,
+      discoveryAge: discoveryAge(item.startsAt,item.firstSeenAt)})), total: total.n };
   }
 
   private watchFromRow(row: Record<string, unknown>): Watch {
@@ -247,6 +285,72 @@ export class Store {
       WHERE sent_at IS NULL AND last_error IS NOT NULL ORDER BY id DESC LIMIT 1`)
       .get() as {lastError:string}|undefined;
     return {pending:row.pending,sent:row.sent,lastError:error?.lastError??null};
+  }
+  /**
+   * Counts only post-baseline matches first seen at this exact scan timestamp.
+   * Existing tables are unchanged and the original Pushover enqueue rules stay intact.
+   */
+  discoveredCounts(scope:'category'|'watch', finishedAt:string, watchId?:number):
+    {recent:number;older:number;unknown:number} {
+    const sql = scope === 'category'
+      ? 'SELECT starts_at AS startsAt FROM items WHERE first_seen_at=? AND is_new=1'
+      : `SELECT i.starts_at AS startsAt FROM watch_matches m
+          JOIN items i ON i.id=m.item_id
+          WHERE m.first_seen_at=? AND m.is_new=1 AND m.watch_id=?`;
+    const rows = this.db.prepare(sql).all(...(scope === 'category'
+      ? [finishedAt] : [finishedAt,watchId])) as {startsAt:string|null}[];
+    return classifyDiscovered(rows,finishedAt);
+  }
+  recordSearchRun(run:SearchRun):void {
+    this.db.prepare(`INSERT INTO search_runs
+      (scope,watch_id,query,finished_at,api_calls,pages,result_count,
+      new_count,recent_count,older_count,unknown_count,secondary_used,
+      secondary_error,limited_by_max_pages,error)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      run.scope,run.watchId,run.query,run.finishedAt,run.apiCalls,run.pages,
+      run.resultCount,run.newCount,run.recentCount,run.olderCount,run.unknownCount,
+      run.secondaryUsed?1:0,run.secondaryError,run.limitedByMaxPages?1:0,run.error);
+  }
+  searchStats(now=new Date().toISOString()):SearchStats {
+    const start=new Date(Date.parse(now)-24*3600*1000).toISOString();
+    const decode=(row:Record<string,unknown>):SearchRun=>({
+      scope:row.scope as 'category'|'watch',
+      watchId:row.watchId===null?null:Number(row.watchId),
+      query:String(row.query),finishedAt:String(row.finishedAt),
+      apiCalls:Number(row.apiCalls),pages:Number(row.pages),resultCount:Number(row.resultCount),
+      newCount:Number(row.newCount),recentCount:Number(row.recentCount),
+      olderCount:Number(row.olderCount),unknownCount:Number(row.unknownCount),
+      secondaryUsed:!!row.secondaryUsed,
+      secondaryError:row.secondaryError===null?null:String(row.secondaryError),
+      limitedByMaxPages:!!row.limitedByMaxPages,
+      error:row.error===null?null:String(row.error)
+    });
+    const rows=this.db.prepare(`SELECT scope,watch_id AS watchId,query,
+      finished_at AS finishedAt,api_calls AS apiCalls,pages,result_count AS resultCount,
+      new_count AS newCount,recent_count AS recentCount,older_count AS olderCount,
+      unknown_count AS unknownCount,secondary_used AS secondaryUsed,
+      secondary_error AS secondaryError,
+      limited_by_max_pages AS limitedByMaxPages,error
+      FROM search_runs ORDER BY id DESC LIMIT 12`).all() as Record<string,unknown>[];
+    const sums=this.db.prepare(`SELECT
+      COALESCE(sum(api_calls),0) AS apiCalls,
+      COALESCE(sum(pages),0) AS pages,
+      COALESCE(sum(new_count),0) AS newCount,
+      COALESCE(sum(recent_count),0) AS recentCount,
+      COALESCE(sum(older_count),0) AS olderCount,
+      COALESCE(sum(unknown_count),0) AS unknownCount,
+      COALESCE(sum(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END),0) AS failures,
+      count(*) AS scans
+      FROM search_runs WHERE finished_at >= ?`).get(start) as Record<string,number>;
+    return {
+      last:rows.length?decode(rows[0]):null,
+      last24h:{
+        apiCalls:sums.apiCalls,pages:sums.pages,newCount:sums.newCount,
+        recentCount:sums.recentCount,olderCount:sums.olderCount,
+        unknownCount:sums.unknownCount,failures:sums.failures,scans:sums.scans
+      },
+      recentRuns:rows.map(decode)
+    };
   }
   stats(): { total: number; newItems: number; lastScan: ScanResult | null } {
     const row = this.db.prepare('SELECT count(*) AS total, coalesce(sum(is_new),0) AS newItems FROM items')
