@@ -12,6 +12,7 @@ type Status = {
   lastScan:Scan|null; lastError:string|null; lastAttempt:string|null;
   categoryId:number; query:string; intervalSeconds:number; maxPages:number;
   pushover?:{configured:boolean;pending:number;sent:number;lastError:string|null};
+  discord?:{configured:boolean;pending:number;sent:number;lastError:string|null};
   discovery?:{
     last:SearchRun|null;
     last24h:{apiCalls:number;pages:number;newCount:number;recentCount:number;
@@ -64,6 +65,8 @@ export default function App() {
   const [saving,setSaving] = useState(false);
   const [testingPushover,setTestingPushover] = useState(false);
   const [pushoverFeedback,setPushoverFeedback] = useState<string|null>(null);
+  const [testingDiscord,setTestingDiscord] = useState(false);
+  const [discordFeedback,setDiscordFeedback] = useState<string|null>(null);
   const [term,setTerm] = useState('');
   const [price,setPrice] = useState('');
   const [minPrice,setMinPrice] = useState('');
@@ -99,6 +102,15 @@ export default function App() {
     return ()=>{cancelled=true;window.clearInterval(timer);};
   },[page,newOnly,watchId,revision]);
 
+  async function testDiscord() {
+    setTestingDiscord(true);setDiscordFeedback(null);
+    try {
+      await sendChange('/api/discord/test','POST');
+      setDiscordFeedback('Testmeddelandet skickades till Discord-kanalen.');
+    } catch(e) {
+      setDiscordFeedback(e instanceof Error?'Discord: '+e.message:'Discord-testet misslyckades');
+    } finally {setTestingDiscord(false);}
+  }
   async function testPushover() {
     setTestingPushover(true);setPushoverFeedback(null);
     try {
@@ -227,6 +239,26 @@ export default function App() {
         </div>
         <button type="button" disabled={!status?.pushover?.configured||testingPushover}
           onClick={()=>{void testPushover();}}>{testingPushover?'Skickar …':'Skicka testnotis'}</button>
+      </section>
+      <section className="pushover-section discord-section" aria-label="Discord-notiser">
+        <div>
+          <div className="eyebrow">NOTISER</div>
+          <h3>Discord <span className={'push-state '+(status?.discord?.configured?'enabled':'disabled')}>
+            {status?.discord?.configured?'Aktiverat':'Inte konfigurerat'}</span></h3>
+          <p>{status?.discord?.configured
+            ? 'Nya spelträffar publiceras i din Discord-kanal – oberoende av Pushover.'
+            : 'Lägg till DISCORD_WEBHOOK_URL i din lokala .env för att aktivera Discord.'}</p>
+          {status?.discord?.configured && <p>
+            {status.discord.pending} väntande · {status.discord.sent} skickade
+          </p>}
+          {status?.discord?.lastError && <p role="status">
+            Senaste Discord-fel: {status.discord.lastError}</p>}
+          {discordFeedback && <p role="status" className="push-feedback">{discordFeedback}</p>}
+        </div>
+        <button type="button" disabled={!status?.discord?.configured||testingDiscord}
+          onClick={()=>{void testDiscord();}}>
+          {testingDiscord?'Skickar …':'Skicka testmeddelande'}
+        </button>
       </section>
       {!status?.configured && status && <div className="notice">⚠️ API-nycklar saknas. Lägg in TRADERA_APP_ID och TRADERA_APP_KEY i .env.</div>}
       {status?.lastError && <div className="notice">⚠️ {status.lastError}</div>}
