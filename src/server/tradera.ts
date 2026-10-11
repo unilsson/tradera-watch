@@ -5,6 +5,7 @@ export interface Listing {
   id: number; categoryId: number; title: string; price: number | null;
   buyNowPrice: number | null; imageUrl: string | null; url: string;
   startsAt: string | null; endsAt: string | null;
+  itemType?: number | null;
 }
 type ObjectValue = Record<string, unknown>;
 const obj = (v: unknown): ObjectValue | null => v !== null && typeof v === 'object' && !Array.isArray(v) ? v as ObjectValue : null;
@@ -68,6 +69,7 @@ export function parseSearchResult(value: unknown): { listings: Listing[]; totalP
         title: str(pick(item, 'shortDescription', 'ShortDescription', 'title', 'Title')) || 'Annons ' + id,
         url: safeUrl(pick(item, 'itemLink', 'ItemLink'), 'tradera.com')
       }),
+      itemType: num(pick(item, 'itemType', 'ItemType')),
       startsAt: str(pick(item, 'startDate', 'StartDate')),
       endsAt: str(pick(item, 'endDate', 'EndDate'))
     });
