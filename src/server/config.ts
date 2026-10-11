@@ -6,6 +6,7 @@ export interface Config {
   appId: string; appKey: string; categoryId: number; query: string;
   orderBy: string; intervalSeconds: number; maxPages: number;
   dataDir: string; port: number;
+  pushoverToken?: string; pushoverUser?: string;
 }
 function num(name: string, fallback: number, min: number, max: number): number {
   const input = process.env[name];
@@ -25,6 +26,8 @@ export function loadConfig(): Config {
     intervalSeconds: num('POLL_INTERVAL_SECONDS', 300, 60, 86400),
     maxPages: num('MAX_PAGES', 3, 1, 20),
     dataDir: resolve(process.env.DATA_DIR || './data'),
-    port: num('PORT', 3001, 1, 65535)
+    port: num('PORT', 3001, 1, 65535),
+    pushoverToken: (process.env.PUSHOVER_APP_TOKEN || '').trim(),
+    pushoverUser: (process.env.PUSHOVER_USER_KEY || '').trim()
   };
 }
