@@ -41,7 +41,7 @@ test('Discord queue is independent, ignores baseline, and does not flood on firs
     store.setWatchEnabled(watch.id,false);
     assert.equal(store.nextDiscordNotification('2026-10-12T12:00:00Z'),null);
     store.setWatchEnabled(watch.id,true);
-    assert.ok(store.nextDiscordNotification(new Date('2026-10-12T12:00:00Z')));
+    assert.ok(store.nextDiscordNotification('2026-10-12T12:00:00Z'));
     store.deleteWatch(watch.id);
     assert.equal(store.discordStats().pending,0);
     assert.equal(store.notificationStats().pending,0);
