@@ -4,7 +4,7 @@ import { largeImageUrl, listingUrl } from '../shared/tradera-media';
 type Listing = {
   id:number; categoryId:number; title:string; price:number|null; buyNowPrice:number|null;
   imageUrl:string|null; url:string; startsAt:string|null; endsAt:string|null;
-  firstSeenAt:string; isNew:boolean;
+  firstSeenAt:string; isNew:boolean; discoveryAge?:'recent'|'older'|'unknown';
 };
 type Scan = {finishedAt:string; fetched:number; added:number; baseline:boolean};
 type Status = {
@@ -12,6 +12,21 @@ type Status = {
   lastScan:Scan|null; lastError:string|null; lastAttempt:string|null;
   categoryId:number; query:string; intervalSeconds:number; maxPages:number;
   pushover?:{configured:boolean;pending:number;sent:number;lastError:string|null};
+  discovery?:{
+    last:SearchRun|null;
+    last24h:{apiCalls:number;pages:number;newCount:number;recentCount:number;
+      olderCount:number;unknownCount:number;failures:number;scans:number};
+    recentRuns:SearchRun[];
+    strategy:{primaryOrderBy:string;secondaryEnabled:boolean;secondaryEvery:number;
+      secondaryPages:number;estimatedCallsPerDay:number;warning:string|null};
+  };
+
+};
+type SearchRun = {
+  scope:'category'|'watch';watchId:number|null;query:string;finishedAt:string;
+  apiCalls:number;pages:number;resultCount:number;newCount:number;
+  recentCount:number;olderCount:number;unknownCount:number;
+  secondaryUsed:boolean;secondaryError:string|null;limitedByMaxPages:boolean;error:string|null;
 };
 type Watch = {
   id:number; term:string; maxPrice:number|null; enabled:boolean;
@@ -134,6 +149,42 @@ export default function App() {
         <div className="metric"><span>Senaste kategoriskanning</span><strong className="small">{date(status?.lastScan?.finishedAt??null)}</strong></div>
         <div className="metric"><span>Kontrollintervall</span><strong className="small">{status?Math.round(status.intervalSeconds/60)+' minuter':'–'}</strong></div>
       </section>
+      <section className="discovery-section" aria-label="Sökstatistik">
+        <div className="discovery-heading">
+          <div><div className="eyebrow">SÖKMOTOR · SPRINT 4A</div><h3>Upptäckta annonser</h3>
+            <p>Summering senaste 24 timmarna. Startdatum är Traderas uppgift, inte verifierad publiceringstid.</p></div>
+          <a href="/api/discovery" target="_blank" rel="noopener noreferrer">Detaljerad JSON ↗</a>
+        </div>
+        <div className="discovery-metrics">
+          <div><span>API-anrop</span><strong>{status?.discovery?.last24h.apiCalls??'–'}</strong></div>
+          <div><span>Kontrollerade resultatsidor</span><strong>{status?.discovery?.last24h.pages??'–'}</strong></div>
+          <div><span>Nyligen startade (≤24 h)</span><strong>{status?.discovery?.last24h.recentCount??'–'}</strong></div>
+          <div><span>Äldre / okänt startdatum</span><strong>{status?.discovery
+            ? status.discovery.last24h.olderCount+status.discovery.last24h.unknownCount:'–'}</strong></div>
+        </div>
+        <p className="strategy-note">Primär sökning: {status?.discovery?.strategy.primaryOrderBy??'–'}.
+          Kompletterande sortering: {status?.discovery?.strategy.secondaryEnabled
+            ? 'var '+status.discovery.strategy.secondaryEvery+':e skanning':'avstängd'}.
+          {' '}Beräknat max {status?.discovery?.strategy.estimatedCallsPerDay??'–'} anrop/dygn.
+          {status?.discovery?.strategy.warning?' ⚠️ '+status.discovery.strategy.warning:''}
+        </p>
+        {!!status?.discovery?.recentRuns.length && <details className="discovery-details">
+          <summary>Visa senaste sökningar ({status.discovery.recentRuns.length})</summary>
+          <div className="discovery-table-scroll">
+            <table><thead><tr><th>Tid</th><th>Bevakning</th><th>API</th><th>Resultat</th>
+              <th>Nyupptäckta</th><th>Ytterligare sortering</th></tr></thead>
+              <tbody>{status.discovery.recentRuns.map((run,index)=><tr key={index}>
+                <td>{date(run.finishedAt)}</td>
+                <td>{run.scope==='category'?'Brädspel':run.query}</td>
+                <td>{run.apiCalls}</td><td>{run.resultCount}</td><td>{run.newCount}</td>
+                <td>{run.secondaryError?'Fel: '+run.secondaryError:
+                  run.secondaryUsed?'Ja':'Nej'}{run.limitedByMaxPages?' · sidgräns':''}
+                  {run.error?' · Fel: '+run.error:''}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </details>}
+      </section>
       <section className="pushover-section" aria-label="Pushover-notiser">
         <div>
           <div className="eyebrow">NOTISER</div>
@@ -211,7 +262,8 @@ export default function App() {
               if(img.dataset.fallback!=='1'){img.dataset.fallback='1';img.src=item.imageUrl!;}
               else img.style.display='none';
             }}/> : <span aria-hidden="true">🎲</span>}
-            {item.isNew && <span className="new-tag">NY</span>}</div>
+            {item.isNew && <span className="new-tag">{item.discoveryAge==='recent'
+              ? 'NYLIGEN STARTAD' : 'NYUPPTÄCKT'}</span>}</div>
           <div className="card-body"><h4>{item.title}</h4>
             <div className="prices"><strong>{money(item.price)}</strong>
               {item.buyNowPrice!==null && <span>Köp nu {money(item.buyNowPrice)}</span>}</div>
