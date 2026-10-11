@@ -39,7 +39,7 @@ test('Discord queue is independent, ignores baseline, and does not flood on firs
     assert.equal(store.discordStats().pending,2);
     assert.equal(store.notificationStats().pending,1);
     store.setWatchEnabled(watch.id,false);
-    assert.equal(store.nextDiscordNotification(new Date('2026-10-12T12:00:00Z')),null);
+    assert.equal(store.nextDiscordNotification('2026-10-12T12:00:00Z'),null);
     store.setWatchEnabled(watch.id,true);
     assert.ok(store.nextDiscordNotification(new Date('2026-10-12T12:00:00Z')));
     store.deleteWatch(watch.id);
@@ -88,9 +88,14 @@ test('Discord rate limiting is retried and stops the current dispatch batch',asy
     assert.equal(attempts,1);
     assert.equal(store.discordStats().pending,2);
     assert.match(store.discordStats().lastError??'',/429/);
-    const first=store.nextDiscordNotification(new Date(Date.now()+125000).toISOString());
-    assert.ok(first);
-    store.discordFailed(first.id,'resume',new Date(Date.now()-1000).toISOString());
+    // The other queued item is still immediately due, but the rate-limited
+    // one must wait. They are therefore recovered in two separate flushes.
+    await worker.flush();
+    assert.equal(attempts,2);
+    assert.equal(store.discordStats().pending,1);
+    const delayed=store.nextDiscordNotification(new Date(Date.now()+125000).toISOString());
+    assert.ok(delayed);
+    store.discordFailed(delayed.id,'resume',new Date(Date.now()-1000).toISOString());
     await worker.flush();
     assert.equal(attempts,3);
     assert.equal(store.discordStats().pending,0);
