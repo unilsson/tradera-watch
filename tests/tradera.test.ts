@@ -44,3 +44,25 @@ test('API errors fail the scan instead of being interpreted as no listings', asy
   const request = (async () => new Response('{}',{status:429,headers:{'retry-after':'60'}})) as typeof fetch;
   await assert.rejects(()=>fetchListings(config,request),/429.*Retry-After/);
 });
+
+test('uses the best available image link before the low-resolution thumbnail', () => {
+  const full = parseSearchResult({items:[{
+    id:201,
+    thumbnailLink:'https://img.example.org/thumb.jpg',
+    imageLinks:['http://unsafe.example.org/file.jpg','https://img.example.org/full.jpg'],
+    detailedImageLinks:[{url:'https://img.example.org/detail.jpg'}]
+  }]}).listings[0];
+  assert.equal(full.imageUrl,'https://img.example.org/full.jpg');
+
+  const detailed = parseSearchResult({items:[{
+    id:202,
+    ThumbnailLink:'https://img.example.org/thumb.jpg',
+    DetailedImageLinks:[{Url:'https://img.example.org/detail.jpg'}]
+  }]}).listings[0];
+  assert.equal(detailed.imageUrl,'https://img.example.org/detail.jpg');
+
+  const thumbnailOnly = parseSearchResult({items:[{
+    id:203, thumbnailLink:'https://img.example.org/thumb.jpg'
+  }]}).listings[0];
+  assert.equal(thumbnailOnly.imageUrl,'https://img.example.org/thumb.jpg');
+});
