@@ -96,8 +96,7 @@ export class Store {
       + from + where
       + ' ORDER BY ' + (scoped ? 'm.first_seen_at' : 'i.first_seen_at')
       + ' DESC, i.id DESC LIMIT ? OFFSET ?')
-      .all(...params, limit, (page - 1) * limit)
-      as unknown as Array<Omit<StoredListing, 'isNew'> & { isNew: number }>;
+      .all(...params, limit, (page - 1) * limit) as unknown as Array<Omit<StoredListing, 'isNew'> & { isNew: number }>;
     return { items: rows.map(item => ({...item, isNew: !!item.isNew})), total: total.n };
   }
 
@@ -120,8 +119,8 @@ export class Store {
     FROM watches w`;
 
   listWatches(): Watch[] {
-    return (this.db.prepare(this.watchQuery + ' ORDER BY w.created_at, w.id').all()
-      as Record<string, unknown>[]).map(row => this.watchFromRow(row));
+    return (this.db.prepare(this.watchQuery + ' ORDER BY w.created_at, w.id').all() as unknown as Record<string, unknown>[])
+      .map(row => this.watchFromRow(row));
   }
   getWatch(id: number): Watch | null {
     const row = this.db.prepare(this.watchQuery + ' WHERE w.id=?')
