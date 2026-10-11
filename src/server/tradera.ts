@@ -1,3 +1,4 @@
+import { largeImageUrl, listingUrl } from '../shared/tradera-media.js';
 import type { Config } from './config.js';
 
 export interface Listing {
@@ -61,9 +62,12 @@ export function parseSearchResult(value: unknown): { listings: Listing[]; totalP
       buyNowPrice: pick(item, 'buyItNowPriceSpecified', 'BuyItNowPriceSpecified') === false
         ? null : num(pick(item, 'buyItNowPrice', 'BuyItNowPrice')),
       // thumbnailLink is low-resolution. Prefer full image links when present.
-      imageUrl: firstFullImage || firstDetailedImage || safeUrl(pick(item, 'thumbnailLink', 'ThumbnailLink')),
-      url: safeUrl(pick(item, 'itemLink', 'ItemLink'), 'tradera.com')
-        || 'https://www.tradera.com/item/' + cat + '/' + id,
+      imageUrl: largeImageUrl(firstFullImage || firstDetailedImage || safeUrl(pick(item, 'thumbnailLink', 'ThumbnailLink'))),
+      url: listingUrl({
+        id, categoryId: cat,
+        title: str(pick(item, 'shortDescription', 'ShortDescription', 'title', 'Title')) || 'Annons ' + id,
+        url: safeUrl(pick(item, 'itemLink', 'ItemLink'), 'tradera.com')
+      }),
       startsAt: str(pick(item, 'startDate', 'StartDate')),
       endsAt: str(pick(item, 'endDate', 'EndDate'))
     });
