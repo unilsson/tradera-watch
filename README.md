@@ -62,6 +62,30 @@ Vid lyckat Pushover-svar med `status:1` markeras köposten skickad. Utskick gör
 
 Testnotisen kan skickas högst en gång per minut via `POST /api/notifications/test`. Status med skickat/väntande antal finns på `GET /api/status` under `pushover`.
 
+## Sprint 4A – upptäckt, sökstrategi och statistik
+
+**Varför:** Tradera `GET /v4/search` erbjuder sluttidssortering men inte verifierad sortering på publiceringsdatum. `POST /v4/search/by-fixed-criteria` nämner *newly listed*, men dess [offentliga OpenAPI-schema](https://api.tradera.com/v4/swagger/v4/swagger.json) för `SearchByFixedCriteriaRequest` har **inga dokumenterade egenskaper**. Vi anropar därför **inte** detta endpoint med påhittade parametrar. Be gärna Tradera (`apiadmin@tradera.com`) dokumentera hur det ska användas.
+
+Vi breddar i stället täckningen säkert:
+
+- Den befintliga, fungerande `EndDateDescending`-sökningen fortsätter vid **varje skanning** för kategorin och varje aktiv spelbevakning.
+- Som standard görs var **tredje** skanning en extra `EndDateAscending`-sökning på **en** resultatsida per kategori/bevakning. Om primär ordning är stigande blir extra ordning fallande.
+- Resultat från båda ordningarna slås samman på Tradera-ID **innan** lagring och Pushover. Primär sökning måste lyckas för att skanningen ska registreras som lyckad; om enbart extrasökningen misslyckas används de primära resultaten och ett synligt varningsfält lagras.
+- Extrakörningar stängs automatiskt av om **beräknat maximalt antal API-anrop** skulle överstiga **9 000/dygn** med nuvarande antal aktiva bevakningar, intervall och sidgränser. Primärsökningen fortsätter då som tidigare. Det är en uppskattning, inte en serverstyrd kvot; återförsök, andra applikationer och ändringar i Traderas regler kan påverka faktiskt förbrukning.
+
+**Skillnaden mellan nyupptäckt och nyligen startad:** För en post som vi först såg efter en bevaknings baslinje är den `NYLIGEN STARTAD` om Traderas `startDate` ligger **0–24 timmar före upptäcktstidpunkten**. Om startdatumet är äldre står `NYUPPTÄCKT`, och om datumet är okänt/felaktigt behandlas det som okänt. `startDate` är inte oberoende verifierat som publiceringsdatum vid återpublicering. Bedömningen baseras på **första upptäckten**, inte på när du öppnar dashboarden. Pushover skickas fortsatt för nya **matchningar**, även om startdatum är äldre/okänt.
+
+**Sökstatistik:** Dashboarden har nu en översikt med sökanrop, antal besökta resultatsidor, nyupptäckta med nyligt startdatum, äldre/okända och en utfällbar lista över de senaste tolv sökningarna (inklusive extra sortering, varningar och sidgräns). `GET /api/discovery` visar rådata och senaste 24 timmarnas summeringar. Anrop räknas även när Tradera svarar med fel. Statistiklagringen startar först vid uppgraderingen och ändrar **inte** tidigare SQLite-historik eller Pushover-kön.
+
+```dotenv
+SECONDARY_SEARCH_EVERY=3   # var tredje skanning (0 = avstängd)
+SECONDARY_SEARCH_PAGES=1   # 1–3 resultatsidor vid extra sökning
+```
+
+De här inställningarna är **valfria**, standarderna gäller även med befintlig `.env`. Med 8 aktiva bevakningar, 5-minutersintervall och 3 primära resultatsidor blir den uppskattade övre gränsen **8 640 sökanrop per dygn**, förutsatt att alla resultatsidor faktiskt hämtas.
+
+**Begränsning:** Fler sorteringsordningar minskar blinda fläckar men garanterar inte att alla annonser hittas. Måtten avser **nyupptäckta matchningar per sökning** (samma annons kan räknas i flera bevakningar), inte unika annonser eller försäljningar.
+
 ## Förbered API-nycklar
 
 1. Registrera en utvecklarapp på [api.tradera.com](https://api.tradera.com/register).
@@ -121,6 +145,8 @@ docker compose logs -f
 | `TRADERA_ORDER_BY` | `EndDateDescending` | Sökordning |
 | `POLL_INTERVAL_SECONDS` | `300` | Kontrollintervall, minst 60 sekunder |
 | `MAX_PAGES` | `3` | Max sökresultatsidor per kontroll |
+| `SECONDARY_SEARCH_EVERY` | `3` | Extra motsatt sluttidssortering var N:e skanning, 0 = av |
+| `SECONDARY_SEARCH_PAGES` | `1` | Max antal extra resultatsidor (1–3) |
 | `DATA_DIR` | `./data` | Databasens mapp |
 | `PORT` | `3001` | API-port; Docker ändrar till 3000 |
 | `PUSHOVER_APP_TOKEN` | tom | Valfri app-token från Pushover |
@@ -146,4 +172,4 @@ API-dokumentation: [Traderas REST v4](https://api.tradera.com/documentation/rest
 
 ## Kommande sprintar
 
-Verklig publiceringsdatum-sortering när Tradera dokumenterar ett stött anrop, redigering av befintliga bevakningar och eventuellt Telegram-notiser.
+Verklig publiceringsdatum-sortering om Tradera dokumenterar ett stött anrop, redigering av befintliga bevakningar och eventuellt Telegram-notiser.

@@ -49,3 +49,25 @@
 .pushover-section .push-state.disabled{border-color:#786349;color:#deb983}
 .pushover-section .push-feedback{color:#f0cd86}
 @media(max-width:680px){.pushover-section{flex-direction:column;align-items:flex-start;margin-top:-6px}}
+
+/* Sprint 4A: search telemetry, diagnostics and publication-age labeling. */
+.discovery-section{background:#132233;border:1px solid #304357;border-radius:16px;
+  padding:22px 24px;margin:-17px 0 38px}
+.discovery-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.discovery-heading h3{font-size:22px;margin:9px 0}
+.discovery-heading p{color:#a4b8cc;margin:0;font-size:12px;line-height:1.5}
+.discovery-heading a{white-space:nowrap;font-size:12px;color:#e8c282;text-decoration:underline}
+.discovery-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:20px}
+.discovery-metrics>div{background:#0c1a29;border:1px solid #294158;padding:14px 15px;border-radius:11px;min-width:0}
+.discovery-metrics span{display:block;font-size:11px;color:#9fb1c5;min-height:30px}
+.discovery-metrics strong{font-size:22px;line-height:1.5;font-variant-numeric:tabular-nums}
+.strategy-note{color:#aabed1;font-size:12px;line-height:1.6;margin:16px 0 0}
+.discovery-details{margin-top:14px;border-top:1px solid #2a3f56;padding-top:13px}
+.discovery-details summary{font-size:12px;color:#e4c082;cursor:pointer}
+.discovery-table-scroll{overflow-x:auto}
+.discovery-details table{width:100%;border-collapse:collapse;margin:11px 0;font-size:12px}
+.discovery-details th{text-align:left;color:#b8cbdf;white-space:nowrap}
+.discovery-details th,.discovery-details td{padding:8px;border-bottom:1px solid #32465c}
+.discovery-details td{overflow-wrap:anywhere}
+@media(max-width:950px){.discovery-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){.discovery-section{padding:18px;margin-top:-5px}.discovery-heading{align-items:flex-start;flex-direction:column}}

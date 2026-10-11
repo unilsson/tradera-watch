@@ -6,6 +6,7 @@ export interface Config {
   appId: string; appKey: string; categoryId: number; query: string;
   orderBy: string; intervalSeconds: number; maxPages: number;
   dataDir: string; port: number;
+  secondaryEvery?: number; secondaryPages?: number;
   pushoverToken?: string; pushoverUser?: string;
 }
 function num(name: string, fallback: number, min: number, max: number): number {
@@ -25,6 +26,8 @@ export function loadConfig(): Config {
     orderBy: (process.env.TRADERA_ORDER_BY || 'EndDateDescending').trim(),
     intervalSeconds: num('POLL_INTERVAL_SECONDS', 300, 60, 86400),
     maxPages: num('MAX_PAGES', 3, 1, 20),
+    secondaryEvery: num('SECONDARY_SEARCH_EVERY', 3, 0, 1440),
+    secondaryPages: num('SECONDARY_SEARCH_PAGES', 1, 1, 3),
     dataDir: resolve(process.env.DATA_DIR || './data'),
     port: num('PORT', 3001, 1, 65535),
     pushoverToken: (process.env.PUSHOVER_APP_TOKEN || '').trim(),
