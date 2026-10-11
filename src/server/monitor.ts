@@ -3,6 +3,7 @@ import { Store, type SearchRun } from './db.js';
 import { fetchListings, searchDiagnostics } from './tradera.js';
 import { matchesWatch } from './watch-rules.js';
 import type { NotificationWorker } from './notifications.js';
+import type { DiscordWorker } from './discord-worker.js';
 
 export class Monitor {
   private timer: NodeJS.Timeout | null = null;
@@ -12,7 +13,8 @@ export class Monitor {
   lastAttempt: string | null = null;
   constructor(private config: Config, private store: Store,
     private fetcher: typeof fetchListings = fetchListings,
-    private notifications?: NotificationWorker) {}
+    private notifications?: NotificationWorker,
+    private discord?: DiscordWorker) {}
   get scanning(): boolean { return this.busy; }
   get configured(): boolean { return !!(this.config.appId && this.config.appKey); }
   get estimatedRequestsPerDay(): number {
@@ -70,7 +72,7 @@ export class Monitor {
           const matched=listings.filter(item=>matchesWatch(item,watch));
           found=matched.length;
           const outcome=this.store.saveWatchScan(
-            watchId!,matched,now,this.notifications?.enabled??false);
+            watchId!,matched,now,this.notifications?.enabled??false,this.discord?.enabled??false);
           added=outcome.added;baseline=outcome.baseline;
         }
         const ages=this.store.discoveredCounts(scope,now,watchId);
@@ -109,6 +111,7 @@ export class Monitor {
     } finally {
       this.busy=false;
       void this.notifications?.flush();
+      void this.discord?.flush();
     }
   }
   start():void {
