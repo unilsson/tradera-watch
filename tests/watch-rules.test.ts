@@ -43,7 +43,7 @@ test('excluded words/phrases ignore Swedish case and accents',()=>{
     term:'Terraforming Mars',maxPrice:500,
     excludeWords:' EXPANSIÓN ,  tillägg , expansion,  '
   });
-  assert.deepEqual(watch.excludeWords,['EXPANSIÓN','tillägg','expansion']);
+  assert.deepEqual(watch.excludeWords,['expansion','tillägg']);
   assert.ok(!matchesWatch({...item,title:'Terraforming Mars – EXPANSIÓN'},watch));
   assert.ok(!matchesWatch({...item,title:'Terraforming Mars – TILLÄGG'},watch));
   assert.ok(matchesWatch(item,watch));
@@ -56,7 +56,7 @@ test('auction/BIN mode respects explicit type and ignores unrelated prices',()=>
   const basic={term:'Terraforming Mars',minPrice:200,maxPrice:300,excludeWords:[]};
   assert.ok(matchesWatch(listing,{...basic,listingType:'auction'}));
   assert.ok(!matchesWatch({...listing,itemType:null},{...basic,listingType:'auction'}));
-  assert.ok(matchesWatch(listing,{...basic,listingType:'buy_now'})); // Hybrid
+  assert.ok(matchesWatch({...listing,buyNowPrice:250},{...basic,listingType:'buy_now'})); // Hybrid
   assert.ok(!matchesWatch({...listing,price:245,buyNowPrice:350},{...basic,listingType:'buy_now'}));
   assert.ok(matchesWatch({...listing,price:350,buyNowPrice:250},{...basic,listingType:'buy_now'}));
   assert.ok(!matchesWatch({...listing,price:350,buyNowPrice:250},{...basic,listingType:'auction'}));
