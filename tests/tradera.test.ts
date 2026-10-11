@@ -18,7 +18,7 @@ test('normalizes camelCase result fields and canonical links', () => {
   assert.equal(listings[0].title,'Catan');
   assert.equal(listings[0].price,100);
   assert.equal(listings[0].buyNowPrice,250);
-  assert.equal(listings[0].url,'https://www.tradera.com/item/181806/123');
+  assert.equal(listings[0].url,'https://www.tradera.com/item/181806/123/catan');
 });
 test('supports PascalCase and refuses unexpected search payloads', () => {
   assert.equal(parseSearchResult({SearchResult:{Items:[{Id:4,ShortDescription:'Risk'}]}}).listings[0].id,4);
@@ -65,4 +65,18 @@ test('uses the best available image link before the low-resolution thumbnail', (
     id:203, thumbnailLink:'https://img.example.org/thumb.jpg'
   }]}).listings[0];
   assert.equal(thumbnailOnly.imageUrl,'https://img.example.org/thumb.jpg');
+});
+
+test('search API partial item links are expanded with the title slug', () => {
+  const { listings } = parseSearchResult({items:[{
+    id:754678944,
+    categoryId:181806,
+    shortDescription:'Fia med knuff från Alga',
+    itemLink:'https://www.tradera.com/item/181806/754678944',
+    thumbnailLink:'https://img.tradera.net/small-3-2/198/662414198_3d2c7ce1-0fe9-402d-838b-33609cc4d025.jpg'
+  }]});
+  assert.equal(listings[0].url,
+    'https://www.tradera.com/item/181806/754678944/fia-med-knuff-fran-alga');
+  assert.equal(listings[0].imageUrl,
+    'https://img.tradera.net/large-3-2/198/662414198_3d2c7ce1-0fe9-402d-838b-33609cc4d025.jpg');
 });
