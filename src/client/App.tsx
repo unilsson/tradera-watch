@@ -29,7 +29,8 @@ type SearchRun = {
   secondaryUsed:boolean;secondaryError:string|null;limitedByMaxPages:boolean;error:string|null;
 };
 type Watch = {
-  id:number; term:string; maxPrice:number|null; enabled:boolean;
+  id:number; term:string; minPrice:number|null; maxPrice:number|null;
+  excludeWords:string[]; listingType:'all'|'auction'|'buy_now'; enabled:boolean;
   initialized:boolean; createdAt:string; lastScannedAt:string|null;
   lastError:string|null; matchedCount:number; newCount:number;
 };
@@ -65,6 +66,10 @@ export default function App() {
   const [pushoverFeedback,setPushoverFeedback] = useState<string|null>(null);
   const [term,setTerm] = useState('');
   const [price,setPrice] = useState('');
+  const [minPrice,setMinPrice] = useState('');
+  const [excluded,setExcluded] = useState('');
+  const [listingType,setListingType] = useState<'all'|'auction'|'buy_now'>('all');
+  const [editingId,setEditingId] = useState<number|null>(null);
   const [revision,setRevision] = useState(0);
   const selected = watches.find(w => w.id === watchId);
   useEffect(()=>{setPage(1);},[newOnly,watchId]);
@@ -103,12 +108,32 @@ export default function App() {
       setPushoverFeedback(e instanceof Error ? 'Pushover: '+e.message : 'Testnotisen misslyckades');
     } finally {setTestingPushover(false);}
   }
+  function resetWatchForm(){
+    setEditingId(null);setTerm('');setPrice('');setMinPrice('');
+    setExcluded('');setListingType('all');
+  }
+  function editWatch(watch:Watch){
+    setEditingId(watch.id);setTerm(watch.term);
+    setPrice(watch.maxPrice===null?'':String(watch.maxPrice));
+    setMinPrice(watch.minPrice===null?'':String(watch.minPrice));
+    setExcluded(watch.excludeWords.join(', '));
+    setListingType(watch.listingType);
+    setActionError(null);
+    document.getElementById('watch-form')?.scrollIntoView({behavior:'smooth',block:'center'});
+  }
   async function createWatch(event:FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);setActionError(null);
     try {
-      await sendChange('/api/watches','POST',{term,maxPrice:price.trim()?Number(price):null});
-      setTerm('');setPrice('');setRevision(r=>r+1);
+      const payload={
+        term,minPrice:minPrice.trim()?Number(minPrice):null,
+        maxPrice:price.trim()?Number(price):null,
+        excludeWords:excluded.split(',').map(word=>word.trim()).filter(Boolean),
+        listingType
+      };
+      await sendChange(editingId===null?'/api/watches':'/api/watches/'+editingId,
+        editingId===null?'POST':'PATCH',payload);
+      resetWatchForm();setRevision(r=>r+1);
     } catch(e) {setActionError(e instanceof Error ? e.message : String(e));}
     finally {setSaving(false);}
   }
@@ -124,6 +149,7 @@ export default function App() {
     try {
       await sendChange('/api/watches/'+watch.id,'DELETE');
       if (watchId===watch.id) setWatchId(null);
+      if (editingId===watch.id) resetWatchForm();
       setRevision(r=>r+1);
     } catch(e) {setActionError(e instanceof Error ? e.message : String(e));}
     finally {setSaving(false);}
@@ -138,9 +164,9 @@ export default function App() {
     </header>
     <main>
       <section className="hero">
-        <div><div className="eyebrow">ANNONSBEVAKNING · SPRINT 2</div>
+        <div><div className="eyebrow">ANNONSBEVAKNING · SPRINT 4B</div>
           <h2>Hitta nästa spel till samlingen.</h2>
-          <p>Bevaka dina favoritspel och sätt ett maxpris. Varje spel får en separat sökning och träffhistorik.</p></div>
+          <p>Bevaka dina favoritspel med prisintervall, exkluderade ord och annonstyp. Varje bevakning har egen sökning.</p></div>
         <div className="hero-symbol" aria-hidden="true">♟</div>
       </section>
       <section className="metrics" aria-label="Statistik">
@@ -211,16 +237,41 @@ export default function App() {
           <div><div className="eyebrow">MINA SPEL</div><h3 id="watches-title">Bevakningar <span>({watches.length}/8)</span></h3>
             <p>Varje bevakning har en egen baslinje. Sökningen görs var {status?Math.round(status.intervalSeconds/60):5}:e minut.</p></div>
         </div>
-        <form className="watch-form" onSubmit={event=>{void createWatch(event);}}>
+        <form id="watch-form" className="watch-form watch-form-advanced" onSubmit={event=>{void createWatch(event);}}>
+          <div className="watch-form-heading">
+            <strong>{editingId===null?'Ny spelbevakning':'Redigera bevakning'}</strong>
+            {editingId!==null && <button className="form-cancel" type="button"
+              onClick={resetWatchForm}>Avbryt redigering</button>}
+          </div>
           <label>Spelnamn
-            <input type="text" placeholder="T.ex. Terraforming Mars" value={term}
+            <input type="text" placeholder="T.ex. Catan" value={term}
               onChange={event=>setTerm(event.target.value)} minLength={2} maxLength={80} required/>
           </label>
-          <label>Maxpris (kr) · valfritt
+          <label>Exkludera ord/fraser (kommatecken)
+            <input type="text" placeholder="expansion, tillägg, reservdelar" value={excluded}
+              onChange={event=>setExcluded(event.target.value)} maxLength={620}/>
+          </label>
+          <label>Minpris (kr)
+            <input type="number" placeholder="Valfritt" value={minPrice} min={1} max={500000} step={1}
+              onChange={event=>setMinPrice(event.target.value)}/>
+          </label>
+          <label>Maxpris (kr)
             <input type="number" placeholder="Valfritt" value={price} min={1} max={500000} step={1}
               onChange={event=>setPrice(event.target.value)}/>
           </label>
-          <button className="primary" type="submit" disabled={saving||watches.length>=8}>+ Lägg till</button>
+          <label>Annonstyp
+            <select value={listingType} onChange={event=>setListingType(event.target.value as typeof listingType)}>
+              <option value="all">Alla annonser</option>
+              <option value="auction">Auktioner (bekräftad typ)</option>
+              <option value="buy_now">Har Köp nu</option>
+            </select>
+          </label>
+          <button className="primary" type="submit"
+            disabled={saving||(editingId===null&&watches.length>=8)}>
+            {saving?'Sparar …':editingId===null?'+ Lägg till':'Spara ändringar'}
+          </button>
+          <p className="form-help">Auktion + Köp nu kan matcha båda valen. Saknas verifierad annonstyp
+            kan vi inte klassificera en auktion. Ändrade filter får en ny baslinje utan gamla Pushover-notiser.</p>
         </form>
         {actionError && <div className="notice">{actionError}</div>}
         <div className="watch-grid">
@@ -232,11 +283,18 @@ export default function App() {
           {watches.map(watch=><article key={watch.id} className={'watch-card '+(watchId===watch.id?'selected':'')}>
             <div className="watch-card-top"><h4>{watch.term}</h4>
               <span className={'watch-state '+(watch.enabled?'active':'paused')}>{watch.enabled?'Aktiv':'Pausad'}</span></div>
-            <p>{watch.maxPrice!==null?'Högst '+money(watch.maxPrice):'Alla priser'}</p>
+            <p>{watch.minPrice!==null&&watch.maxPrice!==null
+              ? money(watch.minPrice)+'–'+money(watch.maxPrice)
+              : watch.minPrice!==null?'Från '+money(watch.minPrice)
+              : watch.maxPrice!==null?'Högst '+money(watch.maxPrice):'Alla priser'}
+              {' · '}{watch.listingType==='auction'?'Auktioner':
+                watch.listingType==='buy_now'?'Har Köp nu':'Alla typer'}</p>
+            {watch.excludeWords.length>0 && <p>Utesluter: {watch.excludeWords.join(', ')}</p>}
             <p>{watch.matchedCount} träffar · {watch.newCount} nya</p>
             <small>{watch.lastError?'Fel: '+watch.lastError:!watch.initialized?'Väntar på första skanning': 'Senast sökt '+date(watch.lastScannedAt)}</small>
             <div className="watch-actions">
               <button type="button" onClick={()=>setWatchId(watch.id)}>Visa träffar</button>
+              <button type="button" disabled={saving} onClick={()=>editWatch(watch)}>Redigera</button>
               <button type="button" disabled={saving} onClick={()=>{void toggleWatch(watch);}}>{watch.enabled?'Pausa':'Aktivera'}</button>
               <button className="danger" type="button" disabled={saving}
                 onClick={()=>{void removeWatch(watch);}} aria-label={'Ta bort '+watch.term}>Ta bort</button>
@@ -248,7 +306,8 @@ export default function App() {
       <section className="listing-header">
         <div><div className="eyebrow">SENASTE FYNDEN</div>
           <h3>{selected?selected.term:'Annonser'} <span>({data.total})</span></h3>
-          <p>{selected?'Individuell bevakning · '+(selected.maxPrice!==null?'max '+money(selected.maxPrice):'alla priser'):
+          <p>{selected?'Individuell bevakning · '+(selected.minPrice!==null?'min '+money(selected.minPrice)+' · ':'')+
+            (selected.maxPrice!==null?'max '+money(selected.maxPrice):'alla priser'):
             'Kategori '+(status?.categoryId??181806)+(status?.query?' · Sökord: '+status.query:'')}</p>
         </div>
         <label className="toggle"><input type="checkbox" checked={newOnly}
