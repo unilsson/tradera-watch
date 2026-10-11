@@ -297,8 +297,9 @@ export class Store {
       : `SELECT i.starts_at AS startsAt FROM watch_matches m
           JOIN items i ON i.id=m.item_id
           WHERE m.first_seen_at=? AND m.is_new=1 AND m.watch_id=?`;
-    const rows = this.db.prepare(sql).all(...(scope === 'category'
-      ? [finishedAt] : [finishedAt,watchId])) as {startsAt:string|null}[];
+    const rows = (scope === 'category'
+      ? this.db.prepare(sql).all(finishedAt)
+      : this.db.prepare(sql).all(finishedAt,watchId ?? -1)) as {startsAt:string|null}[];
     return classifyDiscovered(rows,finishedAt);
   }
   recordSearchRun(run:SearchRun):void {
