@@ -35,3 +35,17 @@
 .watch-actions button.danger{color:#f0b2ac}
 @media(max-width:1000px){.watch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:680px){.watch-form{grid-template-columns:1fr}.watch-grid{grid-template-columns:1fr}}
+
+/* Sprint 3: Pushover delivery status */
+.pushover-section{display:flex;align-items:center;justify-content:space-between;gap:18px;
+  background:#152638;border:1px solid #304c61;border-radius:16px;padding:20px 24px;margin:-17px 0 38px}
+.pushover-section h3{margin:6px 0;font-size:19px}
+.pushover-section p{margin:4px 0;font-size:12px;color:#acc0d4;line-height:1.5}
+.pushover-section button{flex:none;background:#213a51;color:#f2e6cb;
+  border:1px solid #bd9961;border-radius:10px;padding:11px 16px}
+.pushover-section button:disabled{opacity:.42}
+.pushover-section .push-state{font-size:11px;font-weight:500;border-radius:99px;padding:4px 8px;
+  border:1px solid #497860;color:#a4e9b9;vertical-align:middle;margin-left:9px}
+.pushover-section .push-state.disabled{border-color:#786349;color:#deb983}
+.pushover-section .push-feedback{color:#f0cd86}
+@media(max-width:680px){.pushover-section{flex-direction:column;align-items:flex-start;margin-top:-6px}}

@@ -4,6 +4,11 @@ import { dirname } from 'node:path';
 import type { Listing } from './tradera.js';
 import type { Watch, WatchInput } from './watch-rules.js';
 
+export interface QueuedNotification {
+  id: number; watchId: number; watchTerm: string; item: Listing; attempts: number;
+}
+export interface NotificationStats {pending: number; sent: number; lastError: string | null;}
+
 export interface StoredListing extends Listing {
   firstSeenAt: string; lastSeenAt: string; isNew: boolean;
 }
@@ -45,6 +50,20 @@ export class Store {
       PRIMARY KEY (watch_id, item_id)
     );
     CREATE INDEX IF NOT EXISTS watch_matches_new ON watch_matches(watch_id, is_new, first_seen_at);
+    CREATE TABLE IF NOT EXISTS notification_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      watch_id INTEGER NOT NULL REFERENCES watches(id) ON DELETE CASCADE,
+      item_id INTEGER NOT NULL REFERENCES items(id),
+      created_at TEXT NOT NULL,
+      next_attempt_at TEXT NOT NULL,
+      sent_at TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      UNIQUE (watch_id, item_id)
+    );
+    CREATE INDEX IF NOT EXISTS notification_outbox_pending
+      ON notification_outbox(sent_at,next_attempt_at);
+
     `);
     this.db.exec('PRAGMA foreign_keys=ON;');
   }
@@ -148,7 +167,8 @@ export class Store {
   watchFailed(id: number, error: string): void {
     this.db.prepare('UPDATE watches SET last_error=? WHERE id=?').run(error.slice(0,500),id);
   }
-  saveWatchScan(watchId: number, items: Listing[], now = new Date().toISOString()):
+  saveWatchScan(watchId: number, items: Listing[], now = new Date().toISOString(),
+    queueNotifications = false):
     { matched: number; added: number; baseline: boolean } {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -163,6 +183,8 @@ export class Store {
         buy_now_price=?, image_url=?, url=?, starts_at=?, ends_at=?, last_seen_at=? WHERE id=?`);
       const match = this.db.prepare(`INSERT OR IGNORE INTO watch_matches
         (watch_id,item_id,first_seen_at,is_new) VALUES (?,?,?,?)`);
+      const enqueue = this.db.prepare(`INSERT OR IGNORE INTO notification_outbox
+        (watch_id,item_id,created_at,next_attempt_at) VALUES (?,?,?,?)`);
       let added = 0;
       for (const item of items) {
         insert.run(item.id, item.categoryId, item.title, item.price, item.buyNowPrice,
@@ -170,13 +192,61 @@ export class Store {
           now, now, initialized && watch.initialized ? 1 : 0);
         update.run(item.categoryId, item.title, item.price, item.buyNowPrice,
           item.imageUrl, item.url, item.startsAt, item.endsAt, now, item.id);
-        added += Number(match.run(watchId,item.id,now,watch.initialized ? 1 : 0).changes);
+        const newMatch = Number(match.run(watchId,item.id,now,watch.initialized ? 1 : 0).changes);
+        added += newMatch;
+        // Queue only genuinely newly found matches after this watch's baseline.
+        // Both operations share the same transaction to survive restarts safely.
+        if (newMatch && watch.initialized && queueNotifications) enqueue.run(watchId,item.id,now,now);
       }
       this.db.prepare(`UPDATE watches SET initialized=1,last_scanned_at=?,last_error=NULL WHERE id=?`)
         .run(now,watchId);
       this.db.exec('COMMIT');
       return {matched:items.length,added,baseline:!watch.initialized};
     } catch(error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  nextNotification(now = new Date().toISOString()): QueuedNotification | null {
+    const row = this.db.prepare(`SELECT n.id, n.watch_id AS watchId, w.term AS watchTerm, n.attempts,
+        i.id AS itemId, i.category_id AS categoryId, i.title, i.price,
+        i.buy_now_price AS buyNowPrice, i.image_url AS imageUrl, i.url,
+        i.starts_at AS startsAt, i.ends_at AS endsAt
+      FROM notification_outbox n
+      JOIN watches w ON w.id=n.watch_id
+      JOIN items i ON i.id=n.item_id
+      WHERE n.sent_at IS NULL AND n.next_attempt_at <= ? AND w.enabled=1
+      ORDER BY n.next_attempt_at,n.id LIMIT 1`)
+      .get(now) as Record<string,unknown>|undefined;
+    if (!row) return null;
+    return {
+      id:Number(row.id),watchId:Number(row.watchId),watchTerm:String(row.watchTerm),
+      attempts:Number(row.attempts),
+      item:{
+        id:Number(row.itemId),categoryId:Number(row.categoryId),title:String(row.title),
+        price: row.price === null ? null : Number(row.price),
+        buyNowPrice:row.buyNowPrice === null ? null : Number(row.buyNowPrice),
+        imageUrl:row.imageUrl === null ? null : String(row.imageUrl),url:String(row.url),
+        startsAt:row.startsAt === null ? null : String(row.startsAt),
+        endsAt:row.endsAt === null ? null : String(row.endsAt)
+      }
+    };
+  }
+  notificationSent(id: number, now = new Date().toISOString()): void {
+    this.db.prepare(`UPDATE notification_outbox SET sent_at=?, attempts=attempts+1,last_error=NULL
+      WHERE id=? AND sent_at IS NULL`).run(now,id);
+  }
+  notificationFailed(id: number, error: string, nextAttemptAt: string): void {
+    this.db.prepare(`UPDATE notification_outbox
+      SET attempts=attempts+1,last_error=?,next_attempt_at=?
+      WHERE id=? AND sent_at IS NULL`).run(error.slice(0,250),nextAttemptAt,id);
+  }
+  notificationStats(): NotificationStats {
+    const row=this.db.prepare(`SELECT
+      count(*) FILTER (WHERE sent_at IS NULL) AS pending,
+      count(*) FILTER (WHERE sent_at IS NOT NULL) AS sent
+      FROM notification_outbox`).get() as {pending:number;sent:number};
+    const error=this.db.prepare(`SELECT last_error AS lastError FROM notification_outbox
+      WHERE sent_at IS NULL AND last_error IS NOT NULL ORDER BY id DESC LIMIT 1`)
+      .get() as {lastError:string}|undefined;
+    return {pending:row.pending,sent:row.sent,lastError:error?.lastError??null};
   }
   stats(): { total: number; newItems: number; lastScan: ScanResult | null } {
     const row = this.db.prepare('SELECT count(*) AS total, coalesce(sum(is_new),0) AS newItems FROM items')
