@@ -34,6 +34,25 @@ test('active default filters ended dates even before detail lookup; archive rema
   }finally{store.close();}
 });
 
+test('verified active state wins over an outdated endDate in subsequent search snapshots',()=>{
+  const store=new Store(':memory:');
+  try{
+    const outdated='2026-11-10T10:00:00.000Z';
+    const future='2026-12-10T10:00:00.000Z';
+    store.saveScan([item(40,outdated)],now);
+    store.applyItemDetail(40,{state:'active',endsAt:future,gotWinner:false},now);
+    const next='2026-11-13T12:05:00.000Z';
+    // Search v4 could still return the old endDate; don't hide a detail-verified item.
+    store.saveScan([item(40,outdated)],next);
+    assert.equal(store.list(1,10,false,undefined,'active',next).total,1);
+    assert.equal(store.list(1,10,false,undefined,'ended',next).total,0);
+    assert.equal(store.stats(next).activeItems,1);
+    assert.equal(store.statusCheckCandidates(1,next).length,0);
+    store.saveScan([item(41,'not a valid date')],next);
+    assert.equal(store.list(1,10,false,undefined,'active',next).total,2);
+  }finally{store.close();}
+});
+
 test('404 means unavailable, transient failure remains unresolved and throttled',()=>{
   const store=new Store(':memory:');
   try {
