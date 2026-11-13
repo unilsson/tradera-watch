@@ -4,6 +4,7 @@ import { fetchListings, searchDiagnostics } from './tradera.js';
 import { matchesWatch } from './watch-rules.js';
 import type { NotificationWorker } from './notifications.js';
 import type { DiscordWorker } from './discord-worker.js';
+import {fetchItemDetail,ItemLookupError} from './item-lifecycle.js';
 
 export class Monitor {
   private timer: NodeJS.Timeout | null = null;
@@ -11,10 +12,14 @@ export class Monitor {
   private cycles = 0;
   lastError: string | null = null;
   lastAttempt: string | null = null;
+  lastStatusError: string | null = null;
+  lastMaintenance: string | null = null;
+  checkedLastScan = 0;
   constructor(private config: Config, private store: Store,
     private fetcher: typeof fetchListings = fetchListings,
     private notifications?: NotificationWorker,
-    private discord?: DiscordWorker) {}
+    private discord?: DiscordWorker,
+    private detailFetcher:typeof fetchItemDetail = fetchItemDetail) {}
   get scanning(): boolean { return this.busy; }
   get configured(): boolean { return !!(this.config.appId && this.config.appKey); }
   get estimatedRequestsPerDay(): number {
@@ -105,6 +110,42 @@ export class Monitor {
       await search('category',this.config.query);
       for (const watch of this.store.listWatches().filter(w=>w.enabled)) {
         await search('watch',watch.term,watch.id);
+      }
+      // Detail checks are rate-limited per scan and independent of search pagination.
+      // Failed checks are recorded to avoid hammering the public API.
+      const now=new Date().toISOString();
+      this.checkedLastScan=0;
+      this.lastStatusError=null;
+      const ids=this.store.statusCheckCandidates(
+        this.config.statusChecksPerScan??3,now,this.config.statusRecheckHours??24);
+      for(const id of ids){
+        this.checkedLastScan++;
+        const at=new Date().toISOString();
+        try{
+          const detail=await this.detailFetcher(this.config,id);
+          this.store.applyItemDetail(id,detail,at);
+        }catch(cause){
+          const code=cause instanceof ItemLookupError?cause.httpStatus:0;
+          const message=code?'Tradera annonsstatus HTTP '+code:'Annonsstatus kunde inte kontrolleras';
+          this.store.itemStatusFailed(id,message,at,code===404);
+          this.lastStatusError=message;
+          if(code===429)break; // respect method rate limit
+        }
+      }
+      try{
+        const result=this.store.maintain(new Date().toISOString(),{
+          listingRetentionDays:this.config.listingRetentionDays??90,
+          staleListingDays:this.config.staleListingDays??180,
+          searchHistoryDays:this.config.searchHistoryDays??30,
+          scanHistoryDays:this.config.scanHistoryDays??30,
+          notificationHistoryDays:this.config.notificationHistoryDays??30
+        });
+        if(result){
+          this.lastMaintenance=new Date().toISOString();
+          console.log('Tradera database maintenance:',JSON.stringify(result));
+        }
+      }catch(cause){
+        errors.push('Databasrensning: '+(cause instanceof Error?cause.message:String(cause)));
       }
       this.lastError=errors.length?errors.join(' | '):null;
       if(errors.length) console.error('Tradera polling errors:',this.lastError);

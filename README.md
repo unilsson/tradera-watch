@@ -131,6 +131,41 @@ Kör `docker compose up -d --build` och öppna **http://localhost:3000**. I pane
 
 Vi använder `wait=true` och markerar en leverans som skickad först efter kvittens med meddelande-ID från Discord. Precis som andra köbaserade notiser kan meddelanden i undantagsfall dubbleras om Discord har tagit emot dem men svaret tappas bort. Om ingen webhook-URL anges är integrationen helt avstängd och befintliga funktioner fortsätter fungera.
 
+## Annonslivscykel och automatisk databasrensning
+
+För att undvika att SQLite-databasen växer utan kontroll hanteras annonsers livscykel och historik automatiskt.
+
+**Statuskontroll:** Tradera Watch använder fortfarande `GET /v4/search` för sökningen, men kompletterar med dokumenterade `GET /v4/items/{itemId}` för annonser vars kända sluttid passerat, eller som inte setts på 48 timmar. Detaljanropet använder bara samma `X-App-Id`/`X-App-Key` som tidigare. Max **tre detaljanrop per skanning** med standardkonfiguration (5 minuter mellan skanningarna), och samma annons kontrolleras inte igen förrän tidigast 24 timmar senare. Vid HTTP 429 avbryts resten av detaljkontrollerna för den omgången. Misslyckade svar kan inte tolkas som försäljning.
+
+**Tolkning:**
+
+| Resultat | Visas som |
+| --- | --- |
+| `status.ended=false` och aktuellt slutdatum | Aktiv |
+| `status.ended=true`, `status.gotWinner=true` | Avslutad med vinnare (inte verifierad betalning) |
+| `status.ended=true`, auktion och `gotWinner=false` | Avslutad utan vinnare |
+| `status.ended=true`, annan eller okänd annonstyp | Avslutad (försäljning okänd) |
+| HTTP 404 på detaljanrop | Inte längre tillgänglig (inte nödvändigtvis såld) |
+| Slutdatum passerat, men ej verifierad status | Sluttid passerad – väntar på kontroll |
+
+Dashboarden visar **aktiva annonser som standard**. Välj **Avslutade annonser** eller **Alla sparade** för att se historik. API: `GET /api/items?view=active|ended|all` (standard `active`). `GET /api/status` visar `activeItems`, `endedItems` och statuskontrollens diagnostik.
+
+**Automatisk retention:** Varje skanning kan gallra upp till 500 gamla annonser i en begränsad SQLite-transaktion, så rensningen hinner ikapp även om det finns en stor äldre databas. Sök-/skanningshistorik och skickade köposter rensas högst en gång per dygn. Gränserna kan justeras i din lokala `.env`:
+
+| Miljövariabel | Standard | Beteende |
+| --- | --- | --- |
+| `STATUS_CHECKS_PER_SCAN` | 3 | Detaljanrop per skanning (0 stänger av kontrollen) |
+| `STATUS_RECHECK_HOURS` | 24 | Minsta tid före nytt kontrollförsök |
+| `LISTING_RETENTION_DAYS` | 90 | Verifierat avslutade/otillgängliga annonser tas bort efter 90 dagar från slut-/bekräftelsedatum |
+| `STALE_LISTING_DAYS` | 180 | **Obekräftade** annonser som inte synts på 180 dagar tas bort om deras kända sluttid inte ligger i framtiden |
+| `SEARCH_HISTORY_DAYS` | 30 | Sökloggar |
+| `SCAN_HISTORY_DAYS` | 30 | Historik om kategoriskanningar |
+| `NOTIFICATION_HISTORY_DAYS` | 30 | Skickade Pushover- och Discord-köposter |
+
+Viktiga skyddsregler: **Väntande notiser raderas aldrig av den automatiska rensningen**, och annonser som Tradera nyligen bekräftat som aktiva gallras inte med den obekräftade 180-dagarsregeln. Bevakningarna behåller sina filter och `initialized`-flaggor. Matchningar och skickade notisposter som hör till en bortgallrad annons rensas samtidigt. En annons med okänt slutdatum som **inte längre finns i de begränsade sökresultaten** kan dock fortfarande vara aktiv; det kan vi inte garantera. Öka `STALE_LISTING_DAYS` om du vill vara mer konservativ.
+
+Annonsrensningen använder en begränsad batch på högst 500 annonser **per skanning** för att undvika långa databaslås. Historikrensningen körs högst en gång per dygn. SQLite återanvänder vanligtvis frigjorda sidor; själva filen behöver inte omedelbart bli mindre på disken. Första uppstarten migrerar äldre databaser utan att radera befintliga bevakningar eller historik; normal gallring körs sedan enligt gränserna ovan. Säkerhetskopiera gärna `./data/tradera-watch.sqlite` innan uppgradering och använd en SQLite-konsistent backup om appen kör samtidigt.
+
 ## Förbered API-nycklar
 
 1. Registrera en utvecklarapp på [api.tradera.com](https://api.tradera.com/register).
@@ -211,11 +246,11 @@ Den första skanningen kan hämta äldre annonser. Den aktuella kategorin täcke
 - API-nycklar skickas endast server-till-server i `X-App-Id` och `X-App-Key`.
 - Webbgränssnittet behöver ingen Tradera-inloggning.
 - Appens egna `/api/*`-endpoints saknar inloggning i Sprint 1–3 och ska **inte** publiceras oskyddat på internet.
-- Avslutade annonser behålls som historik; appen garanterar inte att deras status är aktuell.
+- Avslutade annonser verifieras via publika detaljanrop när möjligt och gallras efter retentionstiden. Ej verifierad sluttid eller försäljning märks som osäker.
 - Anropstakten påverkas av `MAX_PAGES` × antal kontroller. Respektera Traderas anropsgränser och användarvillkor.
 
 API-dokumentation: [Traderas REST v4](https://api.tradera.com/documentation/rest-getting-started) · [Swagger](https://api.tradera.com/v4/swagger/index.html).
 
 ## Kommande sprintar
 
-Verklig publiceringsdatum-sortering om Tradera dokumenterar ett stött anrop, redigering av befintliga bevakningar och eventuellt Telegram-notiser.
+Prishistorik, favoriter och eventuellt fler notiskanaler; publiceringsdatum-sortering om Tradera dokumenterar ett stött anrop.

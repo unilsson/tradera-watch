@@ -9,6 +9,9 @@ export interface Config {
   secondaryEvery?: number; secondaryPages?: number;
   pushoverToken?: string; pushoverUser?: string;
   discordWebhookUrl?: string;
+  statusChecksPerScan?: number; statusRecheckHours?: number;
+  listingRetentionDays?: number; staleListingDays?: number;
+  searchHistoryDays?: number; scanHistoryDays?: number; notificationHistoryDays?: number;
 }
 function num(name: string, fallback: number, min: number, max: number): number {
   const input = process.env[name];
@@ -33,6 +36,13 @@ export function loadConfig(): Config {
     port: num('PORT', 3001, 1, 65535),
     pushoverToken: (process.env.PUSHOVER_APP_TOKEN || '').trim(),
     pushoverUser: (process.env.PUSHOVER_USER_KEY || '').trim(),
-    discordWebhookUrl: (process.env.DISCORD_WEBHOOK_URL || '').trim()
+    discordWebhookUrl: (process.env.DISCORD_WEBHOOK_URL || '').trim(),
+    statusChecksPerScan: num('STATUS_CHECKS_PER_SCAN',3,0,10),
+    statusRecheckHours: num('STATUS_RECHECK_HOURS',24,1,168),
+    listingRetentionDays: num('LISTING_RETENTION_DAYS',90,1,3650),
+    staleListingDays: num('STALE_LISTING_DAYS',180,30,3650),
+    searchHistoryDays: num('SEARCH_HISTORY_DAYS',30,1,3650),
+    scanHistoryDays: num('SCAN_HISTORY_DAYS',30,1,3650),
+    notificationHistoryDays: num('NOTIFICATION_HISTORY_DAYS',30,1,3650)
   };
 }

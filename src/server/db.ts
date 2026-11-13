@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Listing } from './tradera.js';
+import type { ItemDetail, ListingState } from './item-lifecycle.js';
 import { parseWatchInput, matchesWatch, type Watch, type WatchInput } from './watch-rules.js';
 import { classifyDiscovered, discoveryAge, type DiscoveryAge } from '../shared/discovery.js';
 
@@ -13,6 +14,8 @@ export interface NotificationStats {pending: number; sent: number; lastError: st
 export interface StoredListing extends Listing {
   firstSeenAt: string; lastSeenAt: string; isNew: boolean;
   discoveryAge?: DiscoveryAge;
+  lifecycleStatus: ListingState;
+  statusCheckedAt: string | null;
 }
 export interface ScanResult {
   finishedAt: string; fetched: number; added: number; baseline: boolean;
@@ -126,6 +129,19 @@ export class Store {
       this.db.exec("ALTER TABLE watches ADD COLUMN exclude_words TEXT NOT NULL DEFAULT '[]'");
     if(!existingColumns.has('listing_type'))
       this.db.exec("ALTER TABLE watches ADD COLUMN listing_type TEXT NOT NULL DEFAULT 'all'");
+    // Upgrade existing deployments without resetting listings, watches or queues.
+    const itemColumns=new Set(
+      (this.db.prepare('PRAGMA table_info(items)').all() as {name:string}[])
+        .map(column=>column.name));
+    if(!itemColumns.has('lifecycle_status'))
+      this.db.exec("ALTER TABLE items ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'unknown'");
+    if(!itemColumns.has('status_checked_at'))
+      this.db.exec('ALTER TABLE items ADD COLUMN status_checked_at TEXT');
+    if(!itemColumns.has('closed_at'))
+      this.db.exec('ALTER TABLE items ADD COLUMN closed_at TEXT');
+    if(!itemColumns.has('status_error'))
+      this.db.exec('ALTER TABLE items ADD COLUMN status_error TEXT');
+    this.db.exec('CREATE INDEX IF NOT EXISTS item_lifecycle_due ON items(lifecycle_status,status_checked_at,ends_at,last_seen_at)');
     this.db.exec('PRAGMA foreign_keys=ON;');
   }
   saveScan(items: Listing[], now = new Date().toISOString()): ScanResult {
@@ -158,27 +174,46 @@ export class Store {
       throw error;
     }
   }
-  list(page = 1, limit = 48, onlyNew = false, watchId?: number): { items: StoredListing[]; total: number } {
+  list(page = 1, limit = 48, onlyNew = false, watchId?: number,
+    view:'active'|'ended'|'all'='active', now=new Date().toISOString()):
+    { items: StoredListing[]; total: number } {
     const scoped = watchId !== undefined;
     const from = scoped
       ? ' FROM items i JOIN watch_matches m ON m.item_id=i.id AND m.watch_id=?'
       : ' FROM items i';
-    const where = onlyNew ? ' WHERE ' + (scoped ? 'm.is_new' : 'i.is_new') + '=1' : '';
-    const params = scoped ? [watchId] : [];
-    const total = this.db.prepare('SELECT count(*) AS n' + from + where)
-      .get(...params) as { n: number };
-    const rows = this.db.prepare(`SELECT i.id, i.category_id AS categoryId, i.title, i.price,
+    const filters:string[]=[];
+    const params:(number|string)[]=scoped?[watchId]:[];
+    if(onlyNew)filters.push((scoped?'m.is_new':'i.is_new')+'=1');
+    const expired="(i.ends_at IS NOT NULL AND julianday(i.ends_at) IS NOT NULL "+
+      "AND julianday(i.ends_at) <= julianday(?))";
+    const confirmedLive="(i.lifecycle_status='active' AND i.status_checked_at IS NOT NULL "+
+      "AND julianday(i.status_checked_at) >= julianday(i.ends_at))";
+    const closed="i.lifecycle_status IN ('sold','unsold','ended','unavailable')";
+    const effectiveEnded='('+closed+' OR ('+expired+' AND NOT '+confirmedLive+'))';
+    if(view==='active') {
+      filters.push('NOT '+effectiveEnded);
+      params.push(now);
+    } else if(view==='ended') {
+      filters.push(effectiveEnded);
+      params.push(now);
+    }
+    const where=filters.length?' WHERE '+filters.join(' AND '):'';
+    const total=this.db.prepare('SELECT count(*) AS n'+from+where)
+      .get(...params) as {n:number};
+    const rows=this.db.prepare(`SELECT i.id, i.category_id AS categoryId, i.title, i.price,
       i.buy_now_price AS buyNowPrice, i.image_url AS imageUrl, i.url,
       i.starts_at AS startsAt, i.ends_at AS endsAt,
-      ${scoped ? 'm.first_seen_at' : 'i.first_seen_at'} AS firstSeenAt,
+      i.lifecycle_status AS lifecycleStatus, i.status_checked_at AS statusCheckedAt,
+      ${scoped?'m.first_seen_at':'i.first_seen_at'} AS firstSeenAt,
       i.last_seen_at AS lastSeenAt,
-      ${scoped ? 'm.is_new' : 'i.is_new'} AS isNew`
-      + from + where
-      + ' ORDER BY ' + (scoped ? 'm.first_seen_at' : 'i.first_seen_at')
-      + ' DESC, i.id DESC LIMIT ? OFFSET ?')
-      .all(...params, limit, (page - 1) * limit) as unknown as Array<Omit<StoredListing, 'isNew'> & { isNew: number }>;
-    return { items: rows.map(item => ({...item, isNew: !!item.isNew,
-      discoveryAge: discoveryAge(item.startsAt,item.firstSeenAt)})), total: total.n };
+      ${scoped?'m.is_new':'i.is_new'} AS isNew`
+      +from+where
+      +' ORDER BY '+(scoped?'m.first_seen_at':'i.first_seen_at')
+      +' DESC, i.id DESC LIMIT ? OFFSET ?')
+      .all(...params,limit,(page-1)*limit) as unknown as
+        Array<Omit<StoredListing,'isNew'>&{isNew:number}>;
+    return {items:rows.map(item=>({...item,isNew:!!item.isNew,
+      discoveryAge:discoveryAge(item.startsAt,item.firstSeenAt)})),total:total.n};
   }
 
   private watchFromRow(row: Record<string, unknown>): Watch {
@@ -316,6 +351,98 @@ export class Store {
       return {matched:filtered.length,added,baseline:!watch.initialized};
     } catch(error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  /**
+   * Check expired and long-unseen listings in small batches. Each candidate
+   * is retried at most once per configured cooldown, including failures.
+   */
+  statusCheckCandidates(limit:number,now=new Date().toISOString(),recheckHours=24):number[] {
+    if(limit<=0)return [];
+    const cooldown=new Date(Date.parse(now)-recheckHours*3600000).toISOString();
+    const stale=new Date(Date.parse(now)-48*3600000).toISOString();
+    const rows=this.db.prepare(`SELECT id FROM items
+      WHERE lifecycle_status IN ('unknown','active')
+        AND (status_checked_at IS NULL OR status_checked_at < ?)
+        AND ((ends_at IS NOT NULL AND julianday(ends_at) <= julianday(?))
+             OR julianday(last_seen_at) <= julianday(?))
+      ORDER BY CASE WHEN ends_at IS NOT NULL
+        AND julianday(ends_at) <= julianday(?) THEN 0 ELSE 1 END,
+        COALESCE(status_checked_at,'') ASC, ends_at ASC, id ASC LIMIT ?`)
+      .all(cooldown,now,stale,now,limit) as {id:number}[];
+    return rows.map(row=>row.id);
+  }
+  applyItemDetail(id:number,detail:ItemDetail,now=new Date().toISOString()):void {
+    const terminal=detail.state!=='active';
+    // Prefer the actual end timestamp, but never a future/invented date.
+    const closedAt=terminal && detail.endsAt && Date.parse(detail.endsAt)<=Date.parse(now)
+      ? detail.endsAt : terminal?now:null;
+    this.db.prepare(`UPDATE items SET lifecycle_status=?, status_checked_at=?,
+      status_error=NULL, closed_at=?,
+      ends_at=COALESCE(?,ends_at) WHERE id=?`)
+      .run(detail.state,now,closedAt,detail.endsAt,id);
+  }
+  itemStatusFailed(id:number,message:string,now=new Date().toISOString(),
+    unavailable=false):void {
+    this.db.prepare(`UPDATE items
+      SET status_checked_at=?,status_error=?,lifecycle_status=CASE WHEN ? THEN 'unavailable'
+        ELSE lifecycle_status END,closed_at=CASE WHEN ? THEN ? ELSE closed_at END
+      WHERE id=?`).run(now,message.slice(0,200),unavailable?1:0,unavailable?1:0,now,id);
+  }
+  /**
+   * History maintenance runs daily; eligible old listings are deleted in a
+   * bounded batch on each scan. Pending notifications are ALWAYS protected.
+   */
+  maintain(now=new Date().toISOString(),settings:{
+    listingRetentionDays:number;staleListingDays:number;
+    searchHistoryDays:number;scanHistoryDays:number;notificationHistoryDays:number;
+  }):{items:number;searchRuns:number;scans:number;pushover:number;discord:number}|null {
+    const prev=this.db.prepare("SELECT value FROM meta WHERE key='last_maintenance_at'")
+      .get() as {value:string}|undefined;
+    const daily=!(prev && Number.isFinite(Date.parse(prev.value)) &&
+      Date.parse(now)-Date.parse(prev.value)<86400000);
+    const days=(n:number)=>new Date(Date.parse(now)-n*86400000).toISOString();
+    const completeBefore=days(settings.listingRetentionDays);
+    const staleBefore=days(settings.staleListingDays);
+    const sentBefore=days(settings.notificationHistoryDays);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      // Log history is cleaned daily; capped item deletions can catch up
+      // on EVERY scan even if more than 500 listings become stale per day.
+      const searchRuns=daily?Number(this.db.prepare('DELETE FROM search_runs WHERE finished_at < ?')
+        .run(days(settings.searchHistoryDays)).changes):0;
+      const scans=daily?Number(this.db.prepare('DELETE FROM scans WHERE finished_at < ?')
+        .run(days(settings.scanHistoryDays)).changes):0;
+      const pushover=daily?Number(this.db.prepare(`DELETE FROM notification_outbox
+        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes):0;
+      const discord=daily?Number(this.db.prepare(`DELETE FROM discord_outbox
+        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes):0;
+      const ids=this.db.prepare(`SELECT i.id FROM items i
+        WHERE (
+           (i.lifecycle_status IN ('sold','unsold','ended','unavailable')
+            AND i.closed_at IS NOT NULL AND julianday(i.closed_at) < julianday(?))
+           OR (i.lifecycle_status='unknown' AND julianday(i.last_seen_at)<julianday(?)
+              AND (i.ends_at IS NULL OR julianday(i.ends_at) IS NULL
+                   OR julianday(i.ends_at)<=julianday(?)))
+        ) AND NOT EXISTS (SELECT 1 FROM notification_outbox n
+             WHERE n.item_id=i.id AND n.sent_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM discord_outbox n
+             WHERE n.item_id=i.id AND n.sent_at IS NULL)
+        ORDER BY i.last_seen_at ASC LIMIT 500`)
+        .all(completeBefore,staleBefore,now) as {id:number}[];
+      const dropPushover=this.db.prepare('DELETE FROM notification_outbox WHERE item_id=?');
+      const dropDiscord=this.db.prepare('DELETE FROM discord_outbox WHERE item_id=?');
+      const dropMatches=this.db.prepare('DELETE FROM watch_matches WHERE item_id=?');
+      const dropItem=this.db.prepare('DELETE FROM items WHERE id=?');
+      for(const row of ids) {
+        dropPushover.run(row.id);dropDiscord.run(row.id);dropMatches.run(row.id);
+        dropItem.run(row.id);
+      }
+      if(daily)this.db.prepare(`INSERT INTO meta(key,value) VALUES('last_maintenance_at',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(now);
+      this.db.exec('COMMIT');
+      return daily || ids.length>0?{items:ids.length,searchRuns,scans,pushover,discord}:null;
+    } catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
+
   nextNotification(now = new Date().toISOString()): QueuedNotification | null {
     const row = this.db.prepare(`SELECT n.id, n.watch_id AS watchId, w.term AS watchTerm, n.attempts,
         i.id AS itemId, i.category_id AS categoryId, i.title, i.price,
@@ -471,13 +598,24 @@ export class Store {
       recentRuns:rows.map(decode)
     };
   }
-  stats(): { total: number; newItems: number; lastScan: ScanResult | null } {
+  stats(now=new Date().toISOString()): {
+    total:number;newItems:number;activeItems:number;endedItems:number;
+    lastScan:ScanResult|null
+  } {
     const row = this.db.prepare('SELECT count(*) AS total, coalesce(sum(is_new),0) AS newItems FROM items')
       .get() as {total:number;newItems:number};
     const scan = this.db.prepare('SELECT finished_at AS finishedAt, fetched, added, baseline FROM scans ORDER BY id DESC LIMIT 1')
       .get() as {finishedAt:string;fetched:number;added:number;baseline:number}|undefined;
-    return { total:row.total, newItems:row.newItems,
-      lastScan: scan ? {...scan, baseline:!!scan.baseline} : null };
+    const active=this.db.prepare(`SELECT count(*) AS n FROM items i
+      WHERE i.lifecycle_status NOT IN ('sold','unsold','ended','unavailable')
+        AND (i.ends_at IS NULL OR julianday(i.ends_at) IS NULL
+             OR julianday(i.ends_at)>julianday(?)
+             OR (i.lifecycle_status='active' AND i.status_checked_at IS NOT NULL
+                 AND julianday(i.status_checked_at)>=julianday(i.ends_at)))`)
+      .get(now) as {n:number};
+    return {total:row.total,newItems:row.newItems,
+      activeItems:active.n,endedItems:row.total-active.n,
+      lastScan:scan?{...scan,baseline:!!scan.baseline}:null};
   }
   close(): void { this.db.close(); }
 }

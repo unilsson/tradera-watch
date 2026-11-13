@@ -5,10 +5,15 @@ type Listing = {
   id:number; categoryId:number; title:string; price:number|null; buyNowPrice:number|null;
   imageUrl:string|null; url:string; startsAt:string|null; endsAt:string|null;
   firstSeenAt:string; isNew:boolean; discoveryAge?:'recent'|'older'|'unknown';
+  lifecycleStatus:'unknown'|'active'|'sold'|'unsold'|'ended'|'unavailable';
+  statusCheckedAt:string|null;
 };
 type Scan = {finishedAt:string; fetched:number; added:number; baseline:boolean};
 type Status = {
   configured:boolean; scanning:boolean; total:number; newItems:number;
+  activeItems:number; endedItems:number;
+  lifecycle?:{checkedLastScan:number;lastStatusError:string|null;
+    lastMaintenance:string|null;statusChecksPerScan:number;retentionDays:number;staleDays:number};
   lastScan:Scan|null; lastError:string|null; lastAttempt:string|null;
   categoryId:number; query:string; intervalSeconds:number; maxPages:number;
   pushover?:{configured:boolean;pending:number;sent:number;lastError:string|null};
@@ -39,6 +44,20 @@ type Page = {items:Listing[]; total:number};
 const money = (amount:number|null) => amount == null ? '–' :
   new Intl.NumberFormat('sv-SE',{style:'currency',currency:'SEK',maximumFractionDigits:0}).format(amount);
 const date = (iso:string|null) => iso ? new Date(iso).toLocaleString('sv-SE',{dateStyle:'short',timeStyle:'short'}) : '–';
+function closedState(item:Listing):string|null {
+  switch(item.lifecycleStatus){
+    case 'sold':return 'AVSLUTAD · VINNARE';
+    case 'unsold':return 'AVSLUTAD · INGEN VINNARE';
+    case 'ended':return 'AVSLUTAD';
+    case 'unavailable':return 'EJ TILLGÄNGLIG';
+    default:
+      if(item.lifecycleStatus==='active' && item.endsAt!==null &&
+        item.statusCheckedAt!==null &&
+        Date.parse(item.statusCheckedAt)>=Date.parse(item.endsAt)) return null;
+      return item.endsAt!==null && Date.parse(item.endsAt)<=Date.now()
+        ? 'SLUTTID PASSERAD':null;
+  }
+}
 
 async function sendChange(path:string,method:'POST'|'PATCH'|'DELETE',body?:object):Promise<void> {
   const response = await fetch(path,{
@@ -58,6 +77,7 @@ export default function App() {
   const [watches,setWatches] = useState<Watch[]>([]);
   const [watchId,setWatchId] = useState<number|null>(null);
   const [newOnly,setNewOnly] = useState(false);
+  const [view,setView] = useState<'active'|'ended'|'all'>('active');
   const [page,setPage] = useState(1);
   const [error,setError] = useState<string|null>(null);
   const [actionError,setActionError] = useState<string|null>(null);
@@ -75,13 +95,15 @@ export default function App() {
   const [editingId,setEditingId] = useState<number|null>(null);
   const [revision,setRevision] = useState(0);
   const selected = watches.find(w => w.id === watchId);
-  useEffect(()=>{setPage(1);},[newOnly,watchId]);
+  useEffect(()=>{setPage(1);},[newOnly,watchId,view]);
   useEffect(()=>{
     let cancelled = false;
     async function reload() {
       setLoading(true);
       try {
-        const params = new URLSearchParams({page:String(page),limit:'48',newOnly:newOnly?'1':'0'});
+        const params = new URLSearchParams({
+          page:String(page),limit:'48',newOnly:newOnly?'1':'0',view
+        });
         if (watchId !== null) params.set('watchId',String(watchId));
         const [sr,lr,wr] = await Promise.all([
           fetch('/api/status',{cache:'no-store'}),
@@ -100,7 +122,7 @@ export default function App() {
     void reload();
     const timer = window.setInterval(()=>{void reload();},30000);
     return ()=>{cancelled=true;window.clearInterval(timer);};
-  },[page,newOnly,watchId,revision]);
+  },[page,newOnly,watchId,view,revision]);
 
   async function testDiscord() {
     setTestingDiscord(true);setDiscordFeedback(null);
@@ -182,10 +204,10 @@ export default function App() {
         <div className="hero-symbol" aria-hidden="true">♟</div>
       </section>
       <section className="metrics" aria-label="Statistik">
-        <div className="metric"><span>Observerade annonser</span><strong>{status?.total??'–'}</strong></div>
+        <div className="metric"><span>Aktiva annonser</span><strong>{status?.activeItems??'–'}</strong></div>
+        <div className="metric"><span>Avslutade / förfallna</span><strong>{status?.endedItems??'–'}</strong></div>
         <div className="metric"><span>Upptäckta efter baslinjen</span><strong>{status?.newItems??'–'}</strong></div>
         <div className="metric"><span>Senaste kategoriskanning</span><strong className="small">{date(status?.lastScan?.finishedAt??null)}</strong></div>
-        <div className="metric"><span>Kontrollintervall</span><strong className="small">{status?Math.round(status.intervalSeconds/60)+' minuter':'–'}</strong></div>
       </section>
       <section className="discovery-section" aria-label="Sökstatistik">
         <div className="discovery-heading">
@@ -262,6 +284,9 @@ export default function App() {
       </section>
       {!status?.configured && status && <div className="notice">⚠️ API-nycklar saknas. Lägg in TRADERA_APP_ID och TRADERA_APP_KEY i .env.</div>}
       {status?.lastError && <div className="notice">⚠️ {status.lastError}</div>}
+      {status?.lifecycle?.lastStatusError && <p className="lifecycle-note">
+        Senaste statuskontroll: {status.lifecycle.lastStatusError}. Ny kontroll försöks senare.
+      </p>}
       {error && <div className="notice">Kunde inte uppdatera sidan: {error}</div>}
 
       <section className="watch-section" aria-labelledby="watches-title">
@@ -342,8 +367,17 @@ export default function App() {
             (selected.maxPrice!==null?'max '+money(selected.maxPrice):'alla priser'):
             'Kategori '+(status?.categoryId??181806)+(status?.query?' · Sökord: '+status.query:'')}</p>
         </div>
-        <label className="toggle"><input type="checkbox" checked={newOnly}
-          onChange={event=>setNewOnly(event.target.checked)}/>Visa endast nytillkomna</label>
+        <div className="listing-filters">
+          <label className="status-filter">Annonsstatus
+            <select value={view} onChange={event=>setView(event.target.value as typeof view)}>
+              <option value="active">Aktiva annonser</option>
+              <option value="ended">Avslutade annonser</option>
+              <option value="all">Alla sparade</option>
+            </select>
+          </label>
+          <label className="toggle"><input type="checkbox" checked={newOnly}
+            onChange={event=>setNewOnly(event.target.checked)}/>Visa endast nytillkomna</label>
+        </div>
       </section>
       {data.items.length ? <div className="grid">{data.items.map(item=>
         <a className="card" key={item.id} href={listingUrl(item)} target="_blank" rel="noopener noreferrer">
@@ -354,7 +388,8 @@ export default function App() {
               else img.style.display='none';
             }}/> : <span aria-hidden="true">🎲</span>}
             {item.isNew && <span className="new-tag">{item.discoveryAge==='recent'
-              ? 'NYLIGEN STARTAD' : 'NYUPPTÄCKT'}</span>}</div>
+              ? 'NYLIGEN STARTAD' : 'NYUPPTÄCKT'}</span>}
+            {closedState(item) && <span className="closed-tag">{closedState(item)}</span>}</div>
           <div className="card-body"><h4>{item.title}</h4>
             <div className="prices"><strong>{money(item.price)}</strong>
               {item.buyNowPrice!==null && <span>Köp nu {money(item.buyNowPrice)}</span>}</div>
@@ -364,7 +399,8 @@ export default function App() {
         : <div className="empty">{loading?'Laddar annonser …':
           newOnly?'Inga nytillkomna annonser ännu.':
           selected&&!selected.initialized?'Bevakningen väntar på sin första skanning.':
-          selected?'Inga matchande annonser hittade ännu.':'Inga annonser ännu. Kontrollera API-nycklarna.'}</div>}
+          view==='ended'?'Inga avslutade annonser sparade ännu.':
+          selected?'Inga matchande aktiva annonser hittade just nu.':'Inga aktiva annonser just nu.'}</div>}
       <nav className="pagination" aria-label="Sidnavigering">
         <button disabled={page===1} onClick={()=>setPage(p=>p-1)}>← Föregående</button>
         <span>Sida {page} av {maxPage}</span>
