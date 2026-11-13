@@ -113,7 +113,8 @@ test('retention catches up on more than 500 stale items without waiting a day',(
   const store=new Store(':memory:');
   try {
     const old='2026-03-01T12:00:00.000Z';
-    const rows=Array.from({length:501},(_,index)=>item(1000+index));
+    const rows=Array.from({length:501},(_,index)=>
+      item(1000+index,index===500?'not a valid date':null));
     store.saveScan(rows,old);
     const first=store.maintain(now,settings);
     assert.equal(first?.items,500);
