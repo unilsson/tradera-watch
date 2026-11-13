@@ -420,7 +420,8 @@ export class Store {
            (i.lifecycle_status IN ('sold','unsold','ended','unavailable')
             AND i.closed_at IS NOT NULL AND julianday(i.closed_at) < julianday(?))
            OR (i.lifecycle_status='unknown' AND julianday(i.last_seen_at)<julianday(?)
-              AND (i.ends_at IS NULL OR julianday(i.ends_at)<=julianday(?)))
+              AND (i.ends_at IS NULL OR julianday(i.ends_at) IS NULL
+                   OR julianday(i.ends_at)<=julianday(?)))
         ) AND NOT EXISTS (SELECT 1 FROM notification_outbox n
              WHERE n.item_id=i.id AND n.sent_at IS NULL)
           AND NOT EXISTS (SELECT 1 FROM discord_outbox n
