@@ -109,6 +109,23 @@ test('daily cleanup removes old closed and stale unknown listings, but preserves
   }finally{store.close();}
 });
 
+test('retention catches up on more than 500 stale items without waiting a day',()=>{
+  const store=new Store(':memory:');
+  try {
+    const old='2026-03-01T12:00:00.000Z';
+    const rows=Array.from({length:501},(_,index)=>item(1000+index));
+    store.saveScan(rows,old);
+    const first=store.maintain(now,settings);
+    assert.equal(first?.items,500);
+    assert.equal(store.list(1,10,false,undefined,'all',now).total,1);
+    const second=store.maintain('2026-11-13T12:05:00.000Z',settings);
+    assert.equal(second?.items,1);
+    assert.equal(store.list(1,10,false,undefined,'all',now).total,0);
+    const third=store.maintain('2026-11-13T12:10:00.000Z',settings);
+    assert.equal(third,null); // Nothing left and no daily log purge yet.
+  }finally{store.close();}
+});
+
 test('monitor details checks are capped and refresh listing states without extra search pagination',async()=>{
   const store=new Store(':memory:');
   try{
