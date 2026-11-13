@@ -347,6 +347,95 @@ export class Store {
       return {matched:filtered.length,added,baseline:!watch.initialized};
     } catch(error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  /**
+   * Check expired and long-unseen listings in small batches. Each candidate
+   * is retried at most once per configured cooldown, including failures.
+   */
+  statusCheckCandidates(limit:number,now=new Date().toISOString(),recheckHours=24):number[] {
+    if(limit<=0)return [];
+    const cooldown=new Date(Date.parse(now)-recheckHours*3600000).toISOString();
+    const stale=new Date(Date.parse(now)-48*3600000).toISOString();
+    const rows=this.db.prepare(`SELECT id FROM items
+      WHERE lifecycle_status IN ('unknown','active')
+        AND (status_checked_at IS NULL OR status_checked_at < ?)
+        AND ((ends_at IS NOT NULL AND julianday(ends_at) <= julianday(?))
+             OR julianday(last_seen_at) <= julianday(?))
+      ORDER BY CASE WHEN ends_at IS NOT NULL
+        AND julianday(ends_at) <= julianday(?) THEN 0 ELSE 1 END,
+        COALESCE(status_checked_at,'') ASC, ends_at ASC, id ASC LIMIT ?`)
+      .all(cooldown,now,stale,now,limit) as {id:number}[];
+    return rows.map(row=>row.id);
+  }
+  applyItemDetail(id:number,detail:ItemDetail,now=new Date().toISOString()):void {
+    const terminal=detail.state!=='active';
+    // Prefer the actual end timestamp, but never a future/invented date.
+    const closedAt=terminal && detail.endsAt && Date.parse(detail.endsAt)<=Date.parse(now)
+      ? detail.endsAt : terminal?now:null;
+    this.db.prepare(`UPDATE items SET lifecycle_status=?, status_checked_at=?,
+      status_error=NULL, closed_at=?,
+      ends_at=COALESCE(?,ends_at) WHERE id=?`)
+      .run(detail.state,now,closedAt,detail.endsAt,id);
+  }
+  itemStatusFailed(id:number,message:string,now=new Date().toISOString(),
+    unavailable=false):void {
+    this.db.prepare(`UPDATE items
+      SET status_checked_at=?,status_error=?,lifecycle_status=CASE WHEN ? THEN 'unavailable'
+        ELSE lifecycle_status END,closed_at=CASE WHEN ? THEN ? ELSE closed_at END
+      WHERE id=?`).run(now,message.slice(0,200),unavailable?1:0,unavailable?1:0,now,id);
+  }
+  /**
+   * Maintenance runs at most once per 24h. Pending notifications are ALWAYS
+   * protected; the selected item list is bounded to limit SQLite lock time.
+   */
+  maintain(now=new Date().toISOString(),settings:{
+    listingRetentionDays:number;staleListingDays:number;
+    searchHistoryDays:number;scanHistoryDays:number;notificationHistoryDays:number;
+  }):{items:number;searchRuns:number;scans:number;pushover:number;discord:number}|null {
+    const prev=this.db.prepare("SELECT value FROM meta WHERE key='last_maintenance_at'")
+      .get() as {value:string}|undefined;
+    if(prev && Number.isFinite(Date.parse(prev.value)) &&
+       Date.parse(now)-Date.parse(prev.value)<86400000)return null;
+    const days=(n:number)=>new Date(Date.parse(now)-n*86400000).toISOString();
+    const completeBefore=days(settings.listingRetentionDays);
+    const staleBefore=days(settings.staleListingDays);
+    const sentBefore=days(settings.notificationHistoryDays);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const searchRuns=Number(this.db.prepare('DELETE FROM search_runs WHERE finished_at < ?')
+        .run(days(settings.searchHistoryDays)).changes);
+      const scans=Number(this.db.prepare('DELETE FROM scans WHERE finished_at < ?')
+        .run(days(settings.scanHistoryDays)).changes);
+      const pushover=Number(this.db.prepare(`DELETE FROM notification_outbox
+        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes);
+      const discord=Number(this.db.prepare(`DELETE FROM discord_outbox
+        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes);
+      const ids=this.db.prepare(`SELECT i.id FROM items i
+        WHERE (
+           (i.lifecycle_status IN ('sold','unsold','ended','unavailable')
+            AND i.closed_at IS NOT NULL AND julianday(i.closed_at) < julianday(?))
+           OR (i.lifecycle_status='unknown' AND julianday(i.last_seen_at)<julianday(?)
+              AND (i.ends_at IS NULL OR julianday(i.ends_at)<=julianday(?)))
+        ) AND NOT EXISTS (SELECT 1 FROM notification_outbox n
+             WHERE n.item_id=i.id AND n.sent_at IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM discord_outbox n
+             WHERE n.item_id=i.id AND n.sent_at IS NULL)
+        ORDER BY i.last_seen_at ASC LIMIT 500`)
+        .all(completeBefore,staleBefore,now) as {id:number}[];
+      const dropPushover=this.db.prepare('DELETE FROM notification_outbox WHERE item_id=?');
+      const dropDiscord=this.db.prepare('DELETE FROM discord_outbox WHERE item_id=?');
+      const dropMatches=this.db.prepare('DELETE FROM watch_matches WHERE item_id=?');
+      const dropItem=this.db.prepare('DELETE FROM items WHERE id=?');
+      for(const row of ids) {
+        dropPushover.run(row.id);dropDiscord.run(row.id);dropMatches.run(row.id);
+        dropItem.run(row.id);
+      }
+      this.db.prepare(`INSERT INTO meta(key,value) VALUES('last_maintenance_at',?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(now);
+      this.db.exec('COMMIT');
+      return {items:ids.length,searchRuns,scans,pushover,discord};
+    } catch(error){this.db.exec('ROLLBACK');throw error;}
+  }
+
   nextNotification(now = new Date().toISOString()): QueuedNotification | null {
     const row = this.db.prepare(`SELECT n.id, n.watch_id AS watchId, w.term AS watchTerm, n.attempts,
         i.id AS itemId, i.category_id AS categoryId, i.title, i.price,
@@ -502,13 +591,21 @@ export class Store {
       recentRuns:rows.map(decode)
     };
   }
-  stats(): { total: number; newItems: number; lastScan: ScanResult | null } {
+  stats(now=new Date().toISOString()): {
+    total:number;newItems:number;activeItems:number;endedItems:number;
+    lastScan:ScanResult|null
+  } {
     const row = this.db.prepare('SELECT count(*) AS total, coalesce(sum(is_new),0) AS newItems FROM items')
       .get() as {total:number;newItems:number};
     const scan = this.db.prepare('SELECT finished_at AS finishedAt, fetched, added, baseline FROM scans ORDER BY id DESC LIMIT 1')
       .get() as {finishedAt:string;fetched:number;added:number;baseline:number}|undefined;
-    return { total:row.total, newItems:row.newItems,
-      lastScan: scan ? {...scan, baseline:!!scan.baseline} : null };
+    const active=this.db.prepare(`SELECT count(*) AS n FROM items i
+      WHERE i.lifecycle_status NOT IN ('sold','unsold','ended','unavailable')
+        AND (i.ends_at IS NULL OR julianday(i.ends_at)>julianday(?))`)
+      .get(now) as {n:number};
+    return {total:row.total,newItems:row.newItems,
+      activeItems:active.n,endedItems:row.total-active.n,
+      lastScan:scan?{...scan,baseline:!!scan.baseline}:null};
   }
   close(): void { this.db.close(); }
 }
