@@ -150,7 +150,7 @@ För att undvika att SQLite-databasen växer utan kontroll hanteras annonsers li
 
 Dashboarden visar **aktiva annonser som standard**. Välj **Avslutade annonser** eller **Alla sparade** för att se historik. API: `GET /api/items?view=active|ended|all` (standard `active`). `GET /api/status` visar `activeItems`, `endedItems` och statuskontrollens diagnostik.
 
-**Automatisk retention:** Högst en gång per dygn rensas äldre data ur SQLite i en transaktion. Gränserna kan justeras i din lokala `.env`:
+**Automatisk retention:** Varje skanning kan gallra upp till 500 gamla annonser i en begränsad SQLite-transaktion, så rensningen hinner ikapp även om det finns en stor äldre databas. Sök-/skanningshistorik och skickade köposter rensas högst en gång per dygn. Gränserna kan justeras i din lokala `.env`:
 
 | Miljövariabel | Standard | Beteende |
 | --- | --- | --- |
@@ -164,7 +164,7 @@ Dashboarden visar **aktiva annonser som standard**. Välj **Avslutade annonser**
 
 Viktiga skyddsregler: **Väntande notiser raderas aldrig av den automatiska rensningen**, och annonser som Tradera nyligen bekräftat som aktiva gallras inte med den obekräftade 180-dagarsregeln. Bevakningarna behåller sina filter och `initialized`-flaggor. Matchningar och skickade notisposter som hör till en bortgallrad annons rensas samtidigt. En annons med okänt slutdatum som **inte längre finns i de begränsade sökresultaten** kan dock fortfarande vara aktiv; det kan vi inte garantera. Öka `STALE_LISTING_DAYS` om du vill vara mer konservativ.
 
-Rensningen använder en begränsad batch på högst 500 annonser per omgång för att undvika långa databaslås. SQLite återanvänder vanligtvis frigjorda sidor; själva filen behöver inte omedelbart bli mindre på disken. Första uppstarten migrerar äldre databaser utan att radera befintliga bevakningar eller historik; normal gallring körs sedan enligt gränserna ovan. Säkerhetskopiera gärna `./data/tradera-watch.sqlite` innan uppgradering och använd en SQLite-konsistent backup om appen kör samtidigt.
+Annonsrensningen använder en begränsad batch på högst 500 annonser **per skanning** för att undvika långa databaslås. Historikrensningen körs högst en gång per dygn. SQLite återanvänder vanligtvis frigjorda sidor; själva filen behöver inte omedelbart bli mindre på disken. Första uppstarten migrerar äldre databaser utan att radera befintliga bevakningar eller historik; normal gallring körs sedan enligt gränserna ovan. Säkerhetskopiera gärna `./data/tradera-watch.sqlite` innan uppgradering och använd en SQLite-konsistent backup om appen kör samtidigt.
 
 ## Förbered API-nycklar
 
