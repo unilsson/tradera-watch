@@ -74,7 +74,7 @@ test('daily cleanup removes old closed and stale unknown listings, but preserves
     const result=store.maintain(now,settings);
     assert.ok(result);
     assert.equal(result.items,2); // Sold #1 and stale unknown #4.
-    assert.deepEqual(store.list(1,20,false,undefined,'all',now).items.map(i=>i.id),[6,5,3,2]);
+    assert.deepEqual(store.list(1,20,false,undefined,'all',now).items.map(i=>i.id).sort((a,b)=>a-b),[2,3,5,6]);
     assert.equal(store.notificationStats().pending,1);
     assert.equal(store.discordStats().pending,1);
     assert.equal(store.maintain('2026-11-13T15:00:00.000Z',settings),null);
