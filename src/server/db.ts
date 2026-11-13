@@ -388,8 +388,8 @@ export class Store {
       WHERE id=?`).run(now,message.slice(0,200),unavailable?1:0,unavailable?1:0,now,id);
   }
   /**
-   * Maintenance runs at most once per 24h. Pending notifications are ALWAYS
-   * protected; the selected item list is bounded to limit SQLite lock time.
+   * History maintenance runs daily; eligible old listings are deleted in a
+   * bounded batch on each scan. Pending notifications are ALWAYS protected.
    */
   maintain(now=new Date().toISOString(),settings:{
     listingRetentionDays:number;staleListingDays:number;
@@ -397,22 +397,24 @@ export class Store {
   }):{items:number;searchRuns:number;scans:number;pushover:number;discord:number}|null {
     const prev=this.db.prepare("SELECT value FROM meta WHERE key='last_maintenance_at'")
       .get() as {value:string}|undefined;
-    if(prev && Number.isFinite(Date.parse(prev.value)) &&
-       Date.parse(now)-Date.parse(prev.value)<86400000)return null;
+    const daily=!(prev && Number.isFinite(Date.parse(prev.value)) &&
+      Date.parse(now)-Date.parse(prev.value)<86400000);
     const days=(n:number)=>new Date(Date.parse(now)-n*86400000).toISOString();
     const completeBefore=days(settings.listingRetentionDays);
     const staleBefore=days(settings.staleListingDays);
     const sentBefore=days(settings.notificationHistoryDays);
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const searchRuns=Number(this.db.prepare('DELETE FROM search_runs WHERE finished_at < ?')
-        .run(days(settings.searchHistoryDays)).changes);
-      const scans=Number(this.db.prepare('DELETE FROM scans WHERE finished_at < ?')
-        .run(days(settings.scanHistoryDays)).changes);
-      const pushover=Number(this.db.prepare(`DELETE FROM notification_outbox
-        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes);
-      const discord=Number(this.db.prepare(`DELETE FROM discord_outbox
-        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes);
+      // Log history is cleaned daily; capped item deletions can catch up
+      // on EVERY scan even if more than 500 listings become stale per day.
+      const searchRuns=daily?Number(this.db.prepare('DELETE FROM search_runs WHERE finished_at < ?')
+        .run(days(settings.searchHistoryDays)).changes):0;
+      const scans=daily?Number(this.db.prepare('DELETE FROM scans WHERE finished_at < ?')
+        .run(days(settings.scanHistoryDays)).changes):0;
+      const pushover=daily?Number(this.db.prepare(`DELETE FROM notification_outbox
+        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes):0;
+      const discord=daily?Number(this.db.prepare(`DELETE FROM discord_outbox
+        WHERE sent_at IS NOT NULL AND sent_at < ?`).run(sentBefore).changes):0;
       const ids=this.db.prepare(`SELECT i.id FROM items i
         WHERE (
            (i.lifecycle_status IN ('sold','unsold','ended','unavailable')
@@ -433,10 +435,10 @@ export class Store {
         dropPushover.run(row.id);dropDiscord.run(row.id);dropMatches.run(row.id);
         dropItem.run(row.id);
       }
-      this.db.prepare(`INSERT INTO meta(key,value) VALUES('last_maintenance_at',?)
+      if(daily)this.db.prepare(`INSERT INTO meta(key,value) VALUES('last_maintenance_at',?)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(now);
       this.db.exec('COMMIT');
-      return {items:ids.length,searchRuns,scans,pushover,discord};
+      return daily || ids.length>0?{items:ids.length,searchRuns,scans,pushover,discord}:null;
     } catch(error){this.db.exec('ROLLBACK');throw error;}
   }
 
