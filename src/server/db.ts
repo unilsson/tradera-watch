@@ -185,12 +185,15 @@ export class Store {
     const params:(number|string)[]=scoped?[watchId]:[];
     if(onlyNew)filters.push((scoped?'m.is_new':'i.is_new')+'=1');
     const expired="(i.ends_at IS NOT NULL AND julianday(i.ends_at) <= julianday(?))";
+    const confirmedLive="(i.lifecycle_status='active' AND i.status_checked_at IS NOT NULL "+
+      "AND julianday(i.status_checked_at) >= julianday(i.ends_at))";
     const closed="i.lifecycle_status IN ('sold','unsold','ended','unavailable')";
+    const effectiveEnded='('+closed+' OR ('+expired+' AND NOT '+confirmedLive+'))';
     if(view==='active') {
-      filters.push('NOT ('+closed+') AND NOT '+expired);
+      filters.push('NOT '+effectiveEnded);
       params.push(now);
     } else if(view==='ended') {
-      filters.push('('+closed+' OR '+expired+')');
+      filters.push(effectiveEnded);
       params.push(now);
     }
     const where=filters.length?' WHERE '+filters.join(' AND '):'';
@@ -601,7 +604,9 @@ export class Store {
       .get() as {finishedAt:string;fetched:number;added:number;baseline:number}|undefined;
     const active=this.db.prepare(`SELECT count(*) AS n FROM items i
       WHERE i.lifecycle_status NOT IN ('sold','unsold','ended','unavailable')
-        AND (i.ends_at IS NULL OR julianday(i.ends_at)>julianday(?))`)
+        AND (i.ends_at IS NULL OR julianday(i.ends_at)>julianday(?)
+             OR (i.lifecycle_status='active' AND i.status_checked_at IS NOT NULL
+                 AND julianday(i.status_checked_at)>=julianday(i.ends_at)))`)
       .get(now) as {n:number};
     return {total:row.total,newItems:row.newItems,
       activeItems:active.n,endedItems:row.total-active.n,
