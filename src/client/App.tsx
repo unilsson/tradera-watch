@@ -51,8 +51,11 @@ function closedState(item:Listing):string|null {
     case 'ended':return 'AVSLUTAD';
     case 'unavailable':return 'EJ TILLGÄNGLIG';
     default:
+      if(item.lifecycleStatus==='active' && item.endsAt!==null &&
+        item.statusCheckedAt!==null &&
+        Date.parse(item.statusCheckedAt)>=Date.parse(item.endsAt)) return null;
       return item.endsAt!==null && Date.parse(item.endsAt)<=Date.now()
-        ? 'SLUTTID PASSERAD':'';
+        ? 'SLUTTID PASSERAD':null;
   }
 }
 
