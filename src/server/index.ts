@@ -140,6 +140,14 @@ const server = createServer(async (request, response) => {
       lastError:monitor.lastError, lastAttempt:monitor.lastAttempt,
       categoryId:config.categoryId, query:config.query, intervalSeconds:config.intervalSeconds,
       maxPages:config.maxPages, orderBy:config.orderBy,
+      lifecycle:{
+        checkedLastScan:monitor.checkedLastScan,
+        lastStatusError:monitor.lastStatusError,
+        lastMaintenance:monitor.lastMaintenance,
+        statusChecksPerScan:config.statusChecksPerScan??3,
+        retentionDays:config.listingRetentionDays??90,
+        staleDays:config.staleListingDays??180
+      },
       discovery:{
         ...store.searchStats(),
         strategy:{
@@ -168,7 +176,11 @@ const server = createServer(async (request, response) => {
         throw new RequestError(400,'Ogiltigt bevaknings-ID');
       if (watchId !== undefined && !store.getWatch(watchId))
         throw new RequestError(404,'Bevakningen finns inte');
-      return json(response, 200, store.list(page,limit,url.searchParams.get('newOnly') === '1',watchId));
+      const view=url.searchParams.get('view')??'active';
+      if(view!=='active' && view!=='ended' && view!=='all')
+        throw new RequestError(400,'view måste vara active, ended eller all');
+      return json(response, 200, store.list(page,limit,
+        url.searchParams.get('newOnly') === '1',watchId,view));
     }
     if (url.pathname.startsWith('/api/')) return json(response, 404, {error:'Okänt API'});
     // I utvecklingsläge serverar Vite frontend på port 5173.
