@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Listing } from './tradera.js';
+import type { ItemDetail, ListingState } from './item-lifecycle.js';
 import { parseWatchInput, matchesWatch, type Watch, type WatchInput } from './watch-rules.js';
 import { classifyDiscovered, discoveryAge, type DiscoveryAge } from '../shared/discovery.js';
 
@@ -13,6 +14,8 @@ export interface NotificationStats {pending: number; sent: number; lastError: st
 export interface StoredListing extends Listing {
   firstSeenAt: string; lastSeenAt: string; isNew: boolean;
   discoveryAge?: DiscoveryAge;
+  lifecycleStatus: ListingState;
+  statusCheckedAt: string | null;
 }
 export interface ScanResult {
   finishedAt: string; fetched: number; added: number; baseline: boolean;
@@ -126,6 +129,19 @@ export class Store {
       this.db.exec("ALTER TABLE watches ADD COLUMN exclude_words TEXT NOT NULL DEFAULT '[]'");
     if(!existingColumns.has('listing_type'))
       this.db.exec("ALTER TABLE watches ADD COLUMN listing_type TEXT NOT NULL DEFAULT 'all'");
+    // Upgrade existing deployments without resetting listings, watches or queues.
+    const itemColumns=new Set(
+      (this.db.prepare('PRAGMA table_info(items)').all() as {name:string}[])
+        .map(column=>column.name));
+    if(!itemColumns.has('lifecycle_status'))
+      this.db.exec("ALTER TABLE items ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'unknown'");
+    if(!itemColumns.has('status_checked_at'))
+      this.db.exec('ALTER TABLE items ADD COLUMN status_checked_at TEXT');
+    if(!itemColumns.has('closed_at'))
+      this.db.exec('ALTER TABLE items ADD COLUMN closed_at TEXT');
+    if(!itemColumns.has('status_error'))
+      this.db.exec('ALTER TABLE items ADD COLUMN status_error TEXT');
+    this.db.exec('CREATE INDEX IF NOT EXISTS item_lifecycle_due ON items(lifecycle_status,status_checked_at,ends_at,last_seen_at)');
     this.db.exec('PRAGMA foreign_keys=ON;');
   }
   saveScan(items: Listing[], now = new Date().toISOString()): ScanResult {
@@ -158,27 +174,42 @@ export class Store {
       throw error;
     }
   }
-  list(page = 1, limit = 48, onlyNew = false, watchId?: number): { items: StoredListing[]; total: number } {
+  list(page = 1, limit = 48, onlyNew = false, watchId?: number,
+    view:'active'|'ended'|'all'='active', now=new Date().toISOString()):
+    { items: StoredListing[]; total: number } {
     const scoped = watchId !== undefined;
     const from = scoped
       ? ' FROM items i JOIN watch_matches m ON m.item_id=i.id AND m.watch_id=?'
       : ' FROM items i';
-    const where = onlyNew ? ' WHERE ' + (scoped ? 'm.is_new' : 'i.is_new') + '=1' : '';
-    const params = scoped ? [watchId] : [];
-    const total = this.db.prepare('SELECT count(*) AS n' + from + where)
-      .get(...params) as { n: number };
-    const rows = this.db.prepare(`SELECT i.id, i.category_id AS categoryId, i.title, i.price,
+    const filters:string[]=[];
+    const params:(number|string)[]=scoped?[watchId]:[];
+    if(onlyNew)filters.push((scoped?'m.is_new':'i.is_new')+'=1');
+    const expired="(i.ends_at IS NOT NULL AND julianday(i.ends_at) <= julianday(?))";
+    const closed="i.lifecycle_status IN ('sold','unsold','ended','unavailable')";
+    if(view==='active') {
+      filters.push('NOT ('+closed+') AND NOT '+expired);
+      params.push(now);
+    } else if(view==='ended') {
+      filters.push('('+closed+' OR '+expired+')');
+      params.push(now);
+    }
+    const where=filters.length?' WHERE '+filters.join(' AND '):'';
+    const total=this.db.prepare('SELECT count(*) AS n'+from+where)
+      .get(...params) as {n:number};
+    const rows=this.db.prepare(`SELECT i.id, i.category_id AS categoryId, i.title, i.price,
       i.buy_now_price AS buyNowPrice, i.image_url AS imageUrl, i.url,
       i.starts_at AS startsAt, i.ends_at AS endsAt,
-      ${scoped ? 'm.first_seen_at' : 'i.first_seen_at'} AS firstSeenAt,
+      i.lifecycle_status AS lifecycleStatus, i.status_checked_at AS statusCheckedAt,
+      ${scoped?'m.first_seen_at':'i.first_seen_at'} AS firstSeenAt,
       i.last_seen_at AS lastSeenAt,
-      ${scoped ? 'm.is_new' : 'i.is_new'} AS isNew`
-      + from + where
-      + ' ORDER BY ' + (scoped ? 'm.first_seen_at' : 'i.first_seen_at')
-      + ' DESC, i.id DESC LIMIT ? OFFSET ?')
-      .all(...params, limit, (page - 1) * limit) as unknown as Array<Omit<StoredListing, 'isNew'> & { isNew: number }>;
-    return { items: rows.map(item => ({...item, isNew: !!item.isNew,
-      discoveryAge: discoveryAge(item.startsAt,item.firstSeenAt)})), total: total.n };
+      ${scoped?'m.is_new':'i.is_new'} AS isNew`
+      +from+where
+      +' ORDER BY '+(scoped?'m.first_seen_at':'i.first_seen_at')
+      +' DESC, i.id DESC LIMIT ? OFFSET ?')
+      .all(...params,limit,(page-1)*limit) as unknown as
+        Array<Omit<StoredListing,'isNew'>&{isNew:number}>;
+    return {items:rows.map(item=>({...item,isNew:!!item.isNew,
+      discoveryAge:discoveryAge(item.startsAt,item.firstSeenAt)})),total:total.n};
   }
 
   private watchFromRow(row: Record<string, unknown>): Watch {
